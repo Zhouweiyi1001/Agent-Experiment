@@ -3,10 +3,12 @@ import pandas as pd
 from datetime import datetime
 from openai import OpenAI
 
-# ================= 1. 配置大模型 =================
-# 把这里的 sk-xxxxxx 换成你自己的 DeepSeek API Key
+# ================= 1. 配置大模型（从云端保险箱读取） =================
+# 必须先在 Streamlit Cloud 后台的 Secrets 中填入 DEEPSEEK_API_KEY
+api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
+
 client = OpenAI(
-    api_key="sk-1ecae450b48746b29e2b70af3c86699a", 
+    api_key=api_key, 
     base_url="https://api.deepseek.com" 
 )
 
