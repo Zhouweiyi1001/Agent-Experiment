@@ -3,8 +3,8 @@ import pandas as pd
 from datetime import datetime
 from openai import OpenAI
 
-# ================= 1. 配置大模型（从云端保险箱读取） =================
-# 必须先在 Streamlit Cloud 后台的 Secrets 中填入 DEEPSEEK_API_KEY
+# ================= 1. 配置大模型（从云端保险箱读取新 Key） =================
+# 必须在 Streamlit Cloud 后台的 Secrets 中填入 DEEPSEEK_API_KEY
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 
 client = OpenAI(
@@ -37,7 +37,8 @@ SYSTEM_PROMPT = """
 """
 
 # ================= 3. 初始化页面状态 =================
-st.set_page_config(page_title="科研综述辅助智能体", layout="centered")
+# 修改网页浏览器标签页的名称
+st.set_page_config(page_title="实验Agent", layout="centered")
 
 if "logs" not in st.session_state:
     st.session_state.logs = []
@@ -45,8 +46,10 @@ if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 # ================= 4. 界面与交互 =================
-st.title("科研综述辅助智能体")
-st.markdown("这是一个辅助科研的 AI 助手。请在下方输入框输入指令开始对话。")
+# 修改网页正中间的大标题
+st.title("实验Agent")
+# 修改引导语
+st.markdown("你好！我是你的专属学术科研助手。请告诉我你正在研究的主题，你可以向我索要写作大纲、文献推荐或思路梳理。请在下方输入框输入指令开始对话。")
 
 # 展示历史对话
 for msg in st.session_state.messages[1:]: 
@@ -104,7 +107,7 @@ if prompt := st.chat_input("输入你的指令..."):
                 
     st.session_state.messages.append({"role": "assistant", "content": reply})
 
-# ================= 5. 侧边栏：被试下载数据区（云端版专用） =================
+# ================= 5. 侧边栏：被试下载数据区 =================
 with st.sidebar:
     st.header("任务提交")
     
