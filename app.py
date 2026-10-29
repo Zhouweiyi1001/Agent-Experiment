@@ -4,7 +4,6 @@ from datetime import datetime
 from openai import OpenAI
 
 # ================= 1. 配置大模型（从云端保险箱读取新 Key） =================
-# 必须在 Streamlit Cloud 后台的 Secrets 中填入 DEEPSEEK_API_KEY
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 
 client = OpenAI(
@@ -37,7 +36,6 @@ SYSTEM_PROMPT = """
 """
 
 # ================= 3. 初始化页面状态 =================
-# 修改网页浏览器标签页的名称
 st.set_page_config(page_title="实验Agent", layout="centered")
 
 if "logs" not in st.session_state:
@@ -46,9 +44,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 # ================= 4. 界面与交互 =================
-# 修改网页正中间的大标题
 st.title("实验Agent")
-# 修改引导语
 st.markdown("你好！我是你的专属学术科研助手。请告诉我你正在研究的主题，你可以向我索要写作大纲、文献推荐或思路梳理。请在下方输入框输入指令开始对话。")
 
 # 展示历史对话
@@ -67,8 +63,9 @@ if prompt := st.chat_input("输入你的指令..."):
     keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
     has_questioning = any(kw in prompt for kw in keywords)
     
-    # 把用户的提问写入日志
+    # 把用户的提问写入日志（带上实验编号）
     st.session_state.logs.append({
+        "experiment_id": st.session_state.get('exp_id', '未命名'), # 核心：抓取编号
         "turn": turn,
         "role": "user",
         "content": prompt,
@@ -87,13 +84,14 @@ if prompt := st.chat_input("输入你的指令..."):
                 response = client.chat.completions.create(
                     model="deepseek-chat",
                     messages=st.session_state.messages,
-                    temperature=0.3 # 温度调低，保证输出稳定
+                    temperature=0.3 
                 )
                 reply = response.choices[0].message.content
                 st.markdown(reply)
                 
-                # 把AI的回答也写入日志
+                # 把AI的回答也写入日志（带上实验编号）
                 st.session_state.logs.append({
+                    "experiment_id": st.session_state.get('exp_id', '未命名'), # 核心：抓取编号
                     "turn": turn,
                     "role": "assistant",
                     "content": reply,
@@ -107,16 +105,23 @@ if prompt := st.chat_input("输入你的指令..."):
                 
     st.session_state.messages.append({"role": "assistant", "content": reply})
 
-# ================= 5. 侧边栏：被试下载数据区 =================
+# ================= 5. 侧边栏：实验控制与提交 =================
 with st.sidebar:
-    st.header("任务提交")
+    st.header("实验控制面板")
+    
+    # 【新增】被试编号输入框（被试看不到后台，这个是给主试填的，或者让被试自己填）
+    exp_id = st.text_input("请输入被试编号（如：S01）", value="S01")
+    st.session_state['exp_id'] = exp_id # 将编号存入 session_state，供上面日志调用
+    
+    st.markdown("---")
     
     # 提交最终文本
-    final_text = st.text_area("请将你最终完成的文献综述粘贴到此处（完成后点击下方按钮生成数据）：", height=300)
+    final_text = st.text_area("请将你最终完成的文献综述粘贴到此处（完成后点击下方按钮生成数据）：", height=200)
     
     if st.button("完成任务并生成我的实验数据"):
         if len(final_text) > 20:
             st.session_state.logs.append({
+                "experiment_id": exp_id, # 核心：最终文本也带上编号
                 "turn": "End",
                 "role": "final_text",
                 "content": final_text,
@@ -128,11 +133,11 @@ with st.sidebar:
             df = pd.DataFrame(st.session_state.logs)
             csv = df.to_csv(index=False, encoding="utf-8-sig")
             
-            st.success("✅ 数据生成成功！请点击下方按钮下载数据文件，并发送给主试。")
+            st.success(f"✅ 编号 {exp_id} 数据生成成功！请点击下方按钮下载数据文件，并发送给主试。")
             st.download_button(
                 label="📥 点击下载你的实验数据(CSV)",
                 data=csv,
-                file_name=f"实验数据_{datetime.now().strftime('%m%d_%H%M%S')}.csv",
+                file_name=f"实验数据_{exp_id}_{datetime.now().strftime('%m%d_%H%M%S')}.csv", # 文件名带上编号
                 mime="text/csv",
             )
         else:
