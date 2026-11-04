@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 from openai import OpenAI
 import random
+import urllib.parse
 
 # ================= 1. 配置大模型 =================
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
@@ -42,7 +43,7 @@ with st.sidebar:
     st.session_state['exp_id'] = exp_id 
     
     st.markdown("---")
-    st.info("💡 当您在左侧完成终稿编辑后，请将全文粘贴到下框并生成数据。")
+    st.info("💡 当您在中间完成终稿编辑后，请将全文粘贴到下框并生成数据。")
     final_text = st.text_area("请将你最终完成的文献综述粘贴到此处：", height=200)
     
     if st.button("完成任务并生成我的实验数据"):
@@ -61,7 +62,6 @@ with st.sidebar:
 # ================= 5. 主界面（三标签页布局） =================
 st.title("科研综述协同实验平台")
 
-# 【修改点】：将验证区改名为了中立的“学术文献查阅区”
 tab1, tab2, tab3 = st.tabs(["🤖 AI 对话交互区", "📝 本地文档编辑区", "🔍 学术文献查阅区"])
 
 # --- 标签页 1：AI 对话 ---
@@ -105,31 +105,37 @@ with tab1:
                     reply = "网络波动，请重试。"
         st.session_state.messages.append({"role": "assistant", "content": reply})
 
-# --- 标签页 2：文本编辑区 ---
+# --- 标签页 2：文本编辑区（带保存按钮） ---
 with tab2:
-    st.markdown("💡 **提示**：您可以在这里撰写或粘贴您的综述文本，系统将为您暂存。")
+    st.markdown("💡 **提示**：您可以在这里撰写或粘贴您的综述文本，请随时点击下方按钮保存进度。")
     
-    # 避免实时记录导致 CSV 文件过大，改为记录一段“无操作”的缓冲记录或者字数变化
-    editor_content = st.text_area("在此编辑您的文献综述：", value=st.session_state.editor_text, height=500)
+    # 使用 session_state 绑定文本
+    def update_editor():
+        st.session_state.editor_text = st.session_state.temp_editor
+        
+    editor_content = st.text_area("在此编辑您的文献综述：", value=st.session_state.editor_text, height=450, key="temp_editor", on_change=update_editor)
     
-    # 如果内容发生变化，记录日志（只记录修改动作，不记录全量内容）
-    if editor_content != st.session_state.editor_text:
+    # 保存按钮
+    if st.button("💾 保存当前进度"):
         st.session_state.logs.append({
             "experiment_id": st.session_state.get('exp_id'),
-            "turn": "Edit",
+            "turn": "Save",
             "role": "editor_action",
-            "content": f"修改了文本，当前总字数：{len(editor_content)}", 
+            "content": f"手动保存，当前字数：{len(st.session_state.editor_text)}", 
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
-        st.session_state.editor_text = editor_content
+        st.success("✅ 已保存至暂存区！")
 
-# --- 标签页 3：学术文献查阅区 ---
+# --- 标签页 3：真实学术文献查阅区 ---
 with tab3:
-    st.markdown("💡 **提示**：如果您需要核实文献信息，可以在此输入相关关键词进行检索。")
-    search_query = st.text_input("请输入要检索的文献标题、作者或DOI：")
-    if st.button("🔍 开始检索"):
+    st.markdown("💡 **提示**：您可以在此输入文献标题、作者或关键词，系统将为您调用学术接口进行交叉检索。")
+    
+    # 使用 text_input 带 key，便于回收数据
+    search_query = st.text_input("请输入检索词：")
+    
+    if st.button("🔍 立即检索"):
         if search_query:
-            # 记录搜索行为
+            # 记录检索动作
             st.session_state.logs.append({
                 "experiment_id": st.session_state.get('exp_id'),
                 "turn": "Search",
@@ -137,6 +143,19 @@ with tab3:
                 "content": search_query,
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
-            st.info(f"正在模拟连接学术数据库检索：『{search_query}』...")
-            st.warning("⚠️ **系统提示**：本地内置学术库暂无该条目的完整元数据，建议您点击下方链接前往中国知网官方进行交叉核对。")
-            st.markdown(f"[👉 点击此处前往知网检索『{search_query}』](https://kns.cnki.net/kns8s/defaultresult/index?kw={search_query})")
+            
+            # 提示语，缓冲加载
+            st.info(f"正在调用知网/百度学术检索接口：『{search_query}』...")
+            
+            # 核心：在这里嵌入真实的百度学术搜索页面！
+            # 将搜索词进行 URL 编码
+            encoded_query = urllib.parse.quote(search_query)
+            # 百度学术的搜索链接
+            baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
+            
+            # 用 iframe 内嵌网页展示给被试
+            st.markdown("---")
+            st.markdown("### 📄 检索结果展示：")
+            st.components.v1.iframe(baidu_url, height=600, scrolling=True)
+            
+            st.caption("提示：如果页面加载失败，请点击 [此处跳转百度学术原网站](%s) 查阅。" % baidu_url)
