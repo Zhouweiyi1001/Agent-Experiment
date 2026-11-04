@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 from openai import OpenAI
 import random
-import urllib.parse
+import requests
 
 # ================= 1. 配置大模型 =================
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
@@ -105,37 +105,45 @@ with tab1:
                     reply = "网络波动，请重试。"
         st.session_state.messages.append({"role": "assistant", "content": reply})
 
-# --- 标签页 2：文本编辑区（带保存按钮） ---
+# --- 标签页 2：文本编辑区（带实时字数统计） ---
 with tab2:
     st.markdown("💡 **提示**：您可以在这里撰写或粘贴您的综述文本，请随时点击下方按钮保存进度。")
     
-    # 使用 session_state 绑定文本
     def update_editor():
         st.session_state.editor_text = st.session_state.temp_editor
         
-    editor_content = st.text_area("在此编辑您的文献综述：", value=st.session_state.editor_text, height=450, key="temp_editor", on_change=update_editor)
+    editor_content = st.text_area(
+        "在此编辑您的文献综述（建议 800-1000 字）：", 
+        value=st.session_state.editor_text, 
+        height=450, 
+        key="temp_editor", 
+        on_change=update_editor
+    )
     
-    # 保存按钮
+    current_text = st.session_state.get("temp_editor", "")
+    char_count = len(current_text.replace(" ", "").replace("\n", ""))
+    
+    st.caption(f"📊 **当前字数统计：{char_count} 字** （不含空格与换行）")
+    
     if st.button("💾 保存当前进度"):
         st.session_state.logs.append({
             "experiment_id": st.session_state.get('exp_id'),
             "turn": "Save",
             "role": "editor_action",
-            "content": f"手动保存，当前字数：{len(st.session_state.editor_text)}", 
+            "content": f"手动保存，当前字数：{char_count}", 
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
         st.success("✅ 已保存至暂存区！")
 
-# --- 标签页 3：真实学术文献查阅区 ---
+# --- 标签页 3：学术文献查阅区（OpenAlex 真实检索） ---
 with tab3:
-    st.markdown("💡 **提示**：您可以在此输入文献标题、作者或关键词，系统将为您调用学术接口进行交叉检索。")
+    st.markdown("💡 **提示**：您可以在此输入文献标题、作者或关键词，系统将调用全球学术数据库（OpenAlex）进行交叉检索。")
     
-    # 使用 text_input 带 key，便于回收数据
     search_query = st.text_input("请输入检索词：")
     
     if st.button("🔍 立即检索"):
         if search_query:
-            # 记录检索动作
+            # 记录检索行为
             st.session_state.logs.append({
                 "experiment_id": st.session_state.get('exp_id'),
                 "turn": "Search",
@@ -144,18 +152,50 @@ with tab3:
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
             
-            # 提示语，缓冲加载
-            st.info(f"正在调用知网/百度学术检索接口：『{search_query}』...")
-            
-            # 核心：在这里嵌入真实的百度学术搜索页面！
-            # 将搜索词进行 URL 编码
-            encoded_query = urllib.parse.quote(search_query)
-            # 百度学术的搜索链接
-            baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
-            
-            # 用 iframe 内嵌网页展示给被试
-            st.markdown("---")
-            st.markdown("### 📄 检索结果展示：")
-            st.components.v1.iframe(baidu_url, height=600, scrolling=True)
-            
-            st.caption("提示：如果页面加载失败，请点击 [此处跳转百度学术原网站](%s) 查阅。" % baidu_url)
+            with st.spinner(f"正在检索全球学术数据库：『{search_query}』..."):
+                try:
+                    # 【记得把这里的邮箱换成你真实的邮箱，提高检索配额】
+                    resp = requests.get(
+                        "https://api.openalex.org/works",
+                        params={
+                            "search": search_query,
+                            "per-page": 10,
+                            "select": "id,display_name,publication_year,authorships,primary_location,doi",
+                            "mailto": "你的邮箱@example.com" 
+                        },
+                        timeout=15
+                    )
+                    data = resp.json()
+                    results = data.get("results", [])
+                    
+                    if not results:
+                        st.warning(f"⚠️ 在全球学术数据库（OpenAlex）中未找到与『{search_query}』相关的文献。")
+                        st.caption("提示：OpenAlex 覆盖全球 2.5 亿+ 学术作品。若此处查无此文，该文献极大概率不存在或未被收录，请谨慎引用。")
+                    else:
+                        st.success(f"找到 {data['meta']['count']} 条相关结果，展示前 {len(results)} 条：")
+                        for i, work in enumerate(results, 1):
+                            title = work.get("display_name", "无标题")
+                            year = work.get("publication_year", "未知年份")
+                            authors_list = []
+                            for auth in work.get("authorships", [])[:3]:
+                                name = auth.get("author", {}).get("display_name", "")
+                                if name:
+                                    authors_list.append(name)
+                            authors = ", ".join(authors_list) if authors_list else "未知作者"
+                            source = (work.get("primary_location") or {}).get("source") or {}
+                            journal = source.get("display_name", "未知来源")
+                            doi = work.get("doi", "")
+                            
+                            with st.expander(f"{i}. {title}  ({year})"):
+                                st.markdown(f"**作者**：{authors}")
+                                st.markdown(f"**来源**：{journal}")
+                                if doi:
+                                    st.markdown(f"**DOI**：[{doi}]({doi})")
+                                else:
+                                    st.caption("该条目未收录 DOI")
+                        
+                        st.caption("数据来源：OpenAlex 全球学术数据库（2.5亿+ 学术作品）。")
+                        
+                except Exception as e:
+                    st.error(f"检索请求失败：{e}")
+                    st.caption("请检查网络连接，或稍后重试。")
