@@ -4,6 +4,7 @@ from datetime import datetime
 from openai import OpenAI
 import random
 import requests
+import urllib.parse
 
 # ================= 1. 配置大模型 =================
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
@@ -60,7 +61,7 @@ with st.sidebar:
             st.warning("字数太少，请检查后再提交。")
 
 # ================= 5. 主界面（三标签页布局） =================
-st.title("科研综述协同实验平台")
+st.title("实验Agent")
 
 tab1, tab2, tab3 = st.tabs(["🤖 AI 对话交互区", "📝 本地文档编辑区", "🔍 学术文献查阅区"])
 
@@ -97,7 +98,7 @@ with tab1:
                     api_messages.append({"role": "user", "content": dynamic_prompt})
                     response = client.chat.completions.create(model="deepseek-chat", messages=api_messages, temperature=0.4)
                     reply = response.choices[0].message.content
-                    if is_asking_for_lit: reply += "\n\n*注：AI无法保证绝对确定性，建议您在知网做进一步核实。*"
+                    if is_asking_for_lit: reply += "\n\n*注：AI无法保证绝对确定性，建议您在查阅区做进一步核实。*"
                     st.markdown(reply)
                     st.session_state.logs.append({"experiment_id": st.session_state.get('exp_id'), "turn": turn, "role": "assistant", "content": reply, "is_questioning": False, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 except Exception as e:
@@ -135,33 +136,47 @@ with tab2:
         })
         st.success("✅ 已保存至暂存区！")
 
-# --- 标签页 3：学术文献查阅区（OpenAlex 真实检索） ---
+# --- 标签页 3：学术文献查阅区（双引擎真实检索） ---
 with tab3:
-    st.markdown("💡 **提示**：您可以在此输入文献标题、作者或关键词，系统将调用全球学术数据库（OpenAlex）进行交叉检索。")
+    st.markdown("💡 **提示**：您可以在此输入文献标题、作者或关键词进行交叉核对。系统内置了两个学术检索库供您使用。")
     
-    search_query = st.text_input("请输入检索词：")
+    # 检索输入框
+    search_query = st.text_input("请输入检索词（支持中英文标题、作者、关键词）：")
     
-    if st.button("🔍 立即检索"):
-        if search_query:
-            # 记录检索行为
-            st.session_state.logs.append({
-                "experiment_id": st.session_state.get('exp_id'),
-                "turn": "Search",
-                "role": "search_query",
-                "content": search_query,
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
+    if search_query:
+        # 记录检索行为（只要输入了就记录）
+        st.session_state.logs.append({
+            "experiment_id": st.session_state.get('exp_id'),
+            "turn": "Search",
+            "role": "search_query",
+            "content": search_query,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        
+        # 建立左右两列
+        col1, col2 = st.columns(2)
+        
+        # 左侧：百度学术（适合查中文）
+        with col1:
+            st.markdown("### 🇨🇳 百度学术检索")
+            encoded_query = urllib.parse.quote(search_query)
+            baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
+            st.caption(f"正在检索：『{search_query}』")
+            st.components.v1.iframe(baidu_url, height=500, scrolling=True)
+            st.caption(f"如果网页未显示，请点击 [此处前往百度学术查看]({baidu_url})")
             
-            with st.spinner(f"正在检索全球学术数据库：『{search_query}』..."):
+        # 右侧：OpenAlex（适合查英文和摘要）
+        with col2:
+            st.markdown("### 🌍 OpenAlex 国际学术库")
+            with st.spinner("正在查询 OpenAlex..."):
                 try:
-                    # 【记得把这里的邮箱换成你真实的邮箱，提高检索配额】
                     resp = requests.get(
                         "https://api.openalex.org/works",
                         params={
                             "search": search_query,
-                            "per-page": 10,
-                            "select": "id,display_name,publication_year,authorships,primary_location,doi",
-                            "mailto": "你的邮箱@example.com" 
+                            "per-page": 5,
+                            "select": "id,display_name,publication_year,authorships,primary_location,doi,abstract_inverted_index",
+                            "mailto": "你的邮箱@example.com" # 请务必替换为你的真实邮箱
                         },
                         timeout=15
                     )
@@ -169,33 +184,41 @@ with tab3:
                     results = data.get("results", [])
                     
                     if not results:
-                        st.warning(f"⚠️ 在全球学术数据库（OpenAlex）中未找到与『{search_query}』相关的文献。")
-                        st.caption("提示：OpenAlex 覆盖全球 2.5 亿+ 学术作品。若此处查无此文，该文献极大概率不存在或未被收录，请谨慎引用。")
+                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。")
+                        st.caption("注意：若为真实中文文献，OpenAlex 可能未收录；请以左侧百度学术结果为准。")
                     else:
-                        st.success(f"找到 {data['meta']['count']} 条相关结果，展示前 {len(results)} 条：")
+                        st.success(f"找到 {data['meta']['count']} 条结果：")
                         for i, work in enumerate(results, 1):
                             title = work.get("display_name", "无标题")
                             year = work.get("publication_year", "未知年份")
+                            
                             authors_list = []
                             for auth in work.get("authorships", [])[:3]:
                                 name = auth.get("author", {}).get("display_name", "")
-                                if name:
+                                if name and name not in authors_list:
                                     authors_list.append(name)
-                            authors = ", ".join(authors_list) if authors_list else "未知作者"
-                            source = (work.get("primary_location") or {}).get("source") or {}
-                            journal = source.get("display_name", "未知来源")
-                            doi = work.get("doi", "")
+                            authors = ", ".join(authors_list)
                             
-                            with st.expander(f"{i}. {title}  ({year})"):
+                            source = (work.get("primary_location") or {}).get("source") or {}
+                            journal = source.get("display_name", "未知期刊")
+                            
+                            # 解码摘要
+                            abstract = "无摘要。"
+                            inv_index = work.get("abstract_inverted_index")
+                            if inv_index:
+                                word_positions = []
+                                for word, pos_list in inv_index.items():
+                                    for pos in pos_list:
+                                        word_positions.append((pos, word))
+                                word_positions.sort(key=lambda x: x[0])
+                                abstract = " ".join([w for p, w in word_positions])
+                                if len(abstract) > 150: abstract = abstract[:150] + "..."
+                                
+                            with st.expander(f"{i}. {title} ({year})"):
                                 st.markdown(f"**作者**：{authors}")
                                 st.markdown(f"**来源**：{journal}")
-                                if doi:
-                                    st.markdown(f"**DOI**：[{doi}]({doi})")
-                                else:
-                                    st.caption("该条目未收录 DOI")
-                        
-                        st.caption("数据来源：OpenAlex 全球学术数据库（2.5亿+ 学术作品）。")
-                        
+                                st.markdown(f"**摘要**：{abstract}")
                 except Exception as e:
-                    st.error(f"检索请求失败：{e}")
-                    st.caption("请检查网络连接，或稍后重试。")
+                    st.error(f"OpenAlex 查询失败：{e}")
+    else:
+        st.info("请输入检索词以同时调用百度学术和 OpenAlex 进行检索。")
