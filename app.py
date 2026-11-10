@@ -4,6 +4,7 @@ from datetime import datetime
 from openai import OpenAI
 import random
 import requests
+import urllib.parse
 import json
 import os
 import time
@@ -12,10 +13,9 @@ import time
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# ================= 2. 页面配置与样式注入 =================
+# ================= 2. 页面配置与全局字体放大 =================
 st.set_page_config(page_title="实验Agent", layout="wide")
 
-# 【核心升级：全局字体放大与按钮美化】
 st.markdown("""
 <style>
     /* 放大侧边栏所有字体 */
@@ -27,10 +27,6 @@ st.markdown("""
         font-size: 22px !important;
         font-weight: bold;
     }
-    /* 放大侧边栏输入框的文字 */
-    [data-testid="stSidebar"] textarea {
-        font-size: 16px !important;
-    }
     /* 美化侧边栏按钮，使其更大更显眼 */
     [data-testid="stSidebar"] button {
         height: 3.5em;
@@ -38,9 +34,13 @@ st.markdown("""
         font-weight: bold;
         border-radius: 10px;
     }
+    /* 放大主界面的文本编辑框 */
+    textarea {
+        font-size: 16px !important;
+        line-height: 1.6 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ================= 3. 核心提示词与预设 =================
 SYSTEM_PROMPT = """
@@ -86,7 +86,7 @@ if "start_time" not in st.session_state: st.session_state.start_time = None
 if "is_logged_in" not in st.session_state: st.session_state.is_logged_in = False
 if "current_tab" not in st.session_state: st.session_state.current_tab = "AI 对话交互区"
 
-# ================= 6. 登录界面 =================
+# ================= 6. 登录/恢复面板 =================
 if not st.session_state.is_logged_in:
     st.title("实验Agent - 登录")
     st.info("请输入您的被试编号（如 S01）。如果中途退出，输入相同编号即可恢复进度。")
@@ -130,18 +130,21 @@ else:
         st.markdown("---")
         st.markdown("### 🧭 导航菜单")
         
-        # 用按钮代替 radio，极其好点，且字体大
+        # 大按钮导航，体验极佳
         if st.button("🤖 AI 对话交互区", use_container_width=True):
             st.session_state.current_tab = "AI 对话交互区"
+            st.rerun()
         if st.button("📝 本地文档编辑区", use_container_width=True):
             st.session_state.current_tab = "本地文档编辑区"
+            st.rerun()
         if st.button("🔍 学术文献查阅区", use_container_width=True):
             st.session_state.current_tab = "学术文献查阅区"
+            st.rerun()
         
         st.markdown("---")
         st.markdown("### 📥 任务提交")
         
-        # 使用 session_state 绑定文本框
+        # 使用 session_state 绑定文本框，防止切页丢失
         st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
         
         if st.button("完成任务并下载数据", use_container_width=True, type="primary"):
@@ -155,7 +158,7 @@ else:
             else:
                 st.warning("字数太少，请检查！")
 
-    # ---------- 右侧主工作区（根据按钮切换） ----------
+    # ---------- 右侧主工作区 ----------
     st.title("实验Agent")
     
     # 记录切换日志
@@ -176,7 +179,7 @@ else:
         record_tab_switch("AI 对话交互区")
         st.subheader("🤖 AI 对话交互区")
         
-        # 展示对话历史
+        # 展示对话历史，并过滤掉重复的免责声明
         for msg in st.session_state.messages[1:]:
             content = msg["content"].replace("\n\n*注：AI无法保证绝对确定性，建议您在知网做进一步核实。*", "").replace("\n\n*注：AI无法保证绝对确定性，建议您在查阅区做进一步核实。*", "")
             with st.chat_message(msg["role"]):
@@ -243,12 +246,26 @@ else:
         record_tab_switch("学术文献查阅区")
         st.subheader("🔍 学术文献查阅区")
         st.markdown("💡 提示：您可以在此输入文献标题、作者或关键词进行交叉核对。")
+        
         search_query = st.text_input("请输入检索词：")
         
         if search_query:
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Search", "role": "search_query", "content": search_query, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text)
             
+            # ================= 中文文献检索跳转区 =================
+            st.markdown("### 🇨🇳 中文文献核对")
+            st.info(f"系统已记录您的检索词：『**{search_query}**』。点击下方按钮，即可前往百度学术查看真实的中文检索结果。")
+            
+            encoded_query = urllib.parse.quote(search_query)
+            baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
+            
+            # 跳转按钮（不会卡顿，且记录点击）
+            st.link_button("👉 前往百度学术核实此文献", baidu_url, type="primary", use_container_width=True)
+            st.markdown("---")
+            # ==========================================================
+
+            # OpenAlex 国际学术库
             st.markdown("### 🌍 OpenAlex 国际学术库")
             with st.spinner("正在检索全球学术数据库..."):
                 try:
