@@ -12,6 +12,37 @@ import time
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
+# ================= 2. 页面配置与样式注入 =================
+st.set_page_config(page_title="实验Agent", layout="wide")
+
+# 【核心升级：全局字体放大与按钮美化】
+st.markdown("""
+<style>
+    /* 放大侧边栏所有字体 */
+    [data-testid="stSidebar"] * {
+        font-size: 17px !important;
+    }
+    /* 放大侧边栏标题 */
+    [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        font-size: 22px !important;
+        font-weight: bold;
+    }
+    /* 放大侧边栏输入框的文字 */
+    [data-testid="stSidebar"] textarea {
+        font-size: 16px !important;
+    }
+    /* 美化侧边栏按钮，使其更大更显眼 */
+    [data-testid="stSidebar"] button {
+        height: 3.5em;
+        font-size: 18px !important;
+        font-weight: bold;
+        border-radius: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ================= 3. 核心提示词与预设 =================
 SYSTEM_PROMPT = """
 你是一个拥有海量真实学术文献库的资深科研助手。你的任务是辅助研究生撰写高质量的文献综述。
 【交互规则】
@@ -28,7 +59,7 @@ FAKE_LITERATURE = [
     "中国研究生教育学会. 2023年中国研究生科研素养调查报告. 2023. 核心观点：当前研究生在AIGC使用中存在显著的群体差异。"
 ]
 
-# ================= 2. 存档与计时辅助 =================
+# ================= 4. 存档与计时辅助 =================
 SAVE_DIR = "experiment_saves"
 if not os.path.exists(SAVE_DIR): os.makedirs(SAVE_DIR)
 def get_save_path(exp_id): return os.path.join(SAVE_DIR, f"save_{exp_id}.json")
@@ -45,9 +76,7 @@ def get_elapsed_time(start_time_str):
     start_dt = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
     return int((datetime.now() - start_dt).total_seconds())
 
-# ================= 3. 页面初始化 =================
-st.set_page_config(page_title="实验Agent", layout="wide")
-
+# ================= 5. 页面初始化 =================
 if "exp_id" not in st.session_state: st.session_state.exp_id = ""
 if "messages" not in st.session_state: st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 if "logs" not in st.session_state: st.session_state.logs = []
@@ -57,7 +86,7 @@ if "start_time" not in st.session_state: st.session_state.start_time = None
 if "is_logged_in" not in st.session_state: st.session_state.is_logged_in = False
 if "current_tab" not in st.session_state: st.session_state.current_tab = "AI 对话交互区"
 
-# ================= 4. 登录与全局侧边栏 =================
+# ================= 6. 登录界面 =================
 if not st.session_state.is_logged_in:
     st.title("实验Agent - 登录")
     st.info("请输入您的被试编号（如 S01）。如果中途退出，输入相同编号即可恢复进度。")
@@ -87,37 +116,35 @@ if not st.session_state.is_logged_in:
         else:
             st.warning("请输入编号！")
 
+# ================= 7. 主界面（登录后） =================
 else:
-    # 侧边栏：导航与控制
+    # ---------- 左侧控制面板 ----------
     with st.sidebar:
-        st.header(f"👤 被试：{st.session_state.exp_id}")
-        # 计时器固定在侧边栏顶部，随时可见
+        st.markdown(f"### 👤 被试编号：{st.session_state.exp_id}")
+        
+        # 全局计时器
         elapsed_sec = get_elapsed_time(st.session_state.start_time)
         mins, secs = divmod(elapsed_sec, 60)
         st.info(f"⏱ **任务耗时：{mins} 分 {secs} 秒**")
         
         st.markdown("---")
-        # 用 radio 替代 tabs 实现区域切换
-        tab_choice = st.radio("导航菜单", ["🤖 AI 对话交互区", "📝 本地文档编辑区", "🔍 学术文献查阅区"])
+        st.markdown("### 🧭 导航菜单")
         
-        # 记录切换日志
-        if tab_choice != st.session_state.current_tab:
-            st.session_state.current_tab = tab_choice
-            st.session_state.logs.append({
-                "experiment_id": st.session_state.exp_id,
-                "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
-                "role": "tab_switch",
-                "content": f"切换至：{tab_choice}",
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text)
-            st.rerun()
-
+        # 用按钮代替 radio，极其好点，且字体大
+        if st.button("🤖 AI 对话交互区", use_container_width=True):
+            st.session_state.current_tab = "AI 对话交互区"
+        if st.button("📝 本地文档编辑区", use_container_width=True):
+            st.session_state.current_tab = "本地文档编辑区"
+        if st.button("🔍 学术文献查阅区", use_container_width=True):
+            st.session_state.current_tab = "学术文献查阅区"
+        
         st.markdown("---")
-        st.subheader("任务提交")
-        st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=150)
+        st.markdown("### 📥 任务提交")
         
-        if st.button("完成任务并下载数据"):
+        # 使用 session_state 绑定文本框
+        st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
+        
+        if st.button("完成任务并下载数据", use_container_width=True, type="primary"):
             if len(st.session_state.final_text) > 20:
                 st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "End", "role": "final_text", "content": st.session_state.final_text, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text)
@@ -128,13 +155,28 @@ else:
             else:
                 st.warning("字数太少，请检查！")
 
-    # ================= 5. 右侧主工作区 =================
+    # ---------- 右侧主工作区（根据按钮切换） ----------
     st.title("实验Agent")
     
-    # 根据侧边栏选择，渲染不同区域
-    if tab_choice == "🤖 AI 对话交互区":
-        st.subheader("AI 对话交互区")
-        # 展示对话历史（把原本里的“免责声明”替换掉，防止刷屏）
+    # 记录切换日志
+    def record_tab_switch(tab_name):
+        if st.session_state.get("last_tab") != tab_name:
+            st.session_state.logs.append({
+                "experiment_id": st.session_state.exp_id,
+                "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
+                "role": "tab_switch",
+                "content": f"切换至：{tab_name}",
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text)
+            st.session_state.last_tab = tab_name
+
+    # 模块一：AI 对话交互区
+    if st.session_state.current_tab == "AI 对话交互区":
+        record_tab_switch("AI 对话交互区")
+        st.subheader("🤖 AI 对话交互区")
+        
+        # 展示对话历史
         for msg in st.session_state.messages[1:]:
             content = msg["content"].replace("\n\n*注：AI无法保证绝对确定性，建议您在知网做进一步核实。*", "").replace("\n\n*注：AI无法保证绝对确定性，建议您在查阅区做进一步核实。*", "")
             with st.chat_message(msg["role"]):
@@ -168,9 +210,7 @@ else:
                         response = client.chat.completions.create(model="deepseek-chat", messages=api_messages, temperature=0.4, timeout=30)
                         reply = response.choices[0].message.content
                         
-                        # 【优化】将免责声明从AI回复文本中剥离，不在历史记录里重复
                         st.markdown(reply)
-                        
                         st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "assistant", "content": reply, "is_questioning": False, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                         st.session_state.messages.append({"role": "assistant", "content": reply})
                         save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text)
@@ -178,25 +218,29 @@ else:
                         st.error(f"网络波动，请重试。错误信息：{str(e)[:50]}")
                         st.session_state.messages.pop() 
         
-        # 独立显示免责声明
-        st.info("💡 **系统提示**：以上文献由 AI 基于训练数据生成，AI 无法保证绝对确定性，建议您在左侧导航栏切换至 **🔍 学术文献查阅区** 进行交叉核实。")
+        st.info("💡 **系统提示**：以上内容由 AI 生成。若需验证文献真实性，请点击左侧按钮前往 **🔍 学术文献查阅区**。")
 
-    elif tab_choice == "📝 本地文档编辑区":
-        st.subheader("本地文档编辑区")
+    # 模块二：本地文档编辑区
+    elif st.session_state.current_tab == "本地文档编辑区":
+        record_tab_switch("本地文档编辑区")
+        st.subheader("📝 本地文档编辑区")
+        
         def update_editor():
             st.session_state.editor_text = st.session_state.temp_editor
             char_num = len(st.session_state.editor_text.replace(" ", "").replace("\n", ""))
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Edit", "role": "edit_action", "content": f"字数变更为：{char_num}字", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text)
             
-        st.text_area("在此编辑您的文献综述：", value=st.session_state.editor_text, height=500, key="temp_editor", on_change=update_editor)
+        st.text_area("在此编辑您的文献综述（建议 800-1000 字）：", value=st.session_state.editor_text, height=500, key="temp_editor", on_change=update_editor)
         
         char_count = len(st.session_state.get("temp_editor", "").replace(" ", "").replace("\n", ""))
         saved_data = load_data(st.session_state.exp_id)
         last_save_time = saved_data.get("last_saved", "未知") if saved_data else "未知"
         st.caption(f"📊 **当前字数：{char_count} 字** | 💾 自动保存时间：{last_save_time}")
 
-    elif tab_choice == "🔍 学术文献查阅区":
+    # 模块三：学术文献查阅区
+    elif st.session_state.current_tab == "学术文献查阅区":
+        record_tab_switch("学术文献查阅区")
         st.subheader("🔍 学术文献查阅区")
         st.markdown("💡 提示：您可以在此输入文献标题、作者或关键词进行交叉核对。")
         search_query = st.text_input("请输入检索词：")
@@ -213,7 +257,7 @@ else:
                     results = data.get("results", [])
                     
                     if not results:
-                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。该文献可能不存在或未被收录。")
+                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。该文献可能不存在或未被收录，请谨慎引用。")
                     else:
                         st.success(f"找到 {data['meta']['count']} 条结果：")
                         for i, work in enumerate(results, 1):
