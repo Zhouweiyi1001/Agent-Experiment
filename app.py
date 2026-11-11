@@ -34,10 +34,24 @@ st.markdown("""
         font-weight: bold;
         border-radius: 10px;
     }
-    /* 放大主界面的文本编辑框 */
+    
+    /* 放大主界面文本编辑框 */
     textarea {
         font-size: 16px !important;
         line-height: 1.6 !important;
+    }
+
+    /* ========== 放大登录页面的输入框和按钮 ========== */
+    /* 放大所有单行输入框的文字 */
+    input[type="text"] {
+        font-size: 20px !important;
+        height: 3.5em !important;
+    }
+    /* 放大主界面的所有按钮（尤其是“进入/恢复实验”） */
+    .stButton button {
+        font-size: 18px !important;
+        height: 3.5em !important;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -130,7 +144,7 @@ else:
         st.markdown("---")
         st.markdown("### 🧭 导航菜单")
         
-        # 大按钮导航，体验极佳
+        # 大按钮导航
         if st.button("🤖 AI 对话交互区", use_container_width=True):
             st.session_state.current_tab = "AI 对话交互区"
             st.rerun()
@@ -144,7 +158,6 @@ else:
         st.markdown("---")
         st.markdown("### 📥 任务提交")
         
-        # 使用 session_state 绑定文本框，防止切页丢失
         st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
         
         if st.button("完成任务并下载数据", use_container_width=True, type="primary"):
@@ -179,7 +192,7 @@ else:
         record_tab_switch("AI 对话交互区")
         st.subheader("🤖 AI 对话交互区")
         
-        # 展示对话历史，并过滤掉重复的免责声明
+        # 展示对话历史
         for msg in st.session_state.messages[1:]:
             content = msg["content"].replace("\n\n*注：AI无法保证绝对确定性，建议您在知网做进一步核实。*", "").replace("\n\n*注：AI无法保证绝对确定性，建议您在查阅区做进一步核实。*", "")
             with st.chat_message(msg["role"]):
@@ -260,7 +273,7 @@ else:
             encoded_query = urllib.parse.quote(search_query)
             baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
             
-            # 跳转按钮（不会卡顿，且记录点击）
+            # 跳转按钮
             st.link_button("👉 前往百度学术核实此文献", baidu_url, type="primary", use_container_width=True)
             st.markdown("---")
             # ==========================================================
