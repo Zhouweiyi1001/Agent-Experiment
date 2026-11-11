@@ -18,19 +18,19 @@ st.set_page_config(page_title="实验Agent", layout="wide")
 
 st.markdown("""
 <style>
-    /* 1. 放大侧边栏所有字体 */
+    /* 放大侧边栏所有字体 */
     [data-testid="stSidebar"] * { font-size: 17px !important; }
     [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-size: 22px !important; font-weight: bold; }
     [data-testid="stSidebar"] button { height: 3.5em; font-size: 18px !important; font-weight: bold; border-radius: 10px; }
     
-    /* 2. 放大主界面的文本编辑框 */
+    /* 放大主界面的文本编辑框 */
     textarea { font-size: 16px !important; line-height: 1.6 !important; }
 
-    /* 3. 放大登录页面的输入框和按钮 */
+    /* 放大登录页面的输入框和按钮 */
     input[type="text"] { font-size: 20px !important; height: 3.5em !important; }
     .stButton button { font-size: 18px !important; height: 3.5em !important; font-weight: bold; }
 
-    /* 4. 放大主界面右侧的各类提示框、检索输入框和跳转按钮 */
+    /* 放大主界面右侧的各类提示框、检索输入框和跳转按钮 */
     [data-testid="stNotification"] * { font-size: 18px !important; }
     [data-testid="stLinkButton"] a {
         font-size: 18px !important;
@@ -70,7 +70,6 @@ def load_data(exp_id):
         with open(path, "r", encoding="utf-8") as f: return json.load(f)
     return None
 
-# 新增了 pre_test_done 参数存入 JSON
 def save_data(exp_id, messages, logs, editor_text, start_time, final_text, is_finished=False, pre_test_done=False):
     data = {
         "messages": messages, "logs": logs, "editor_text": editor_text, 
@@ -113,21 +112,19 @@ if not st.session_state.is_logged_in:
                 if saved_data.get("is_finished", False):
                     st.error("⚠️ 该被试编号已完成实验并提交数据。为保证数据有效性，无法再次进入。感谢您的参与！")
                 else:
-                    # 【核心逻辑】恢复历史进度，读取 pre_test_done 状态
                     st.session_state.messages = saved_data["messages"]
                     st.session_state.logs = saved_data["logs"]
                     st.session_state.editor_text = saved_data["editor_text"]
                     st.session_state.final_text = saved_data.get("final_text", "")
                     st.session_state.start_time = saved_data["start_time"]
                     st.session_state.is_finished = False
-                    st.session_state.pre_test_done = saved_data.get("pre_test_done", False) # 如果之前做了，这里就是True
+                    st.session_state.pre_test_done = saved_data.get("pre_test_done", False)
                     
                     st.success(f"成功恢复编号 {login_id} 的进度！")
                     st.session_state.is_logged_in = True
                     time.sleep(1)
                     st.rerun()
             else:
-                # 【核心逻辑】全新实验，前测设为 False
                 st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
                 st.session_state.logs = [{"experiment_id": login_id, "elapsed_seconds": 0, "role": "system_start", "content": "实验正式开始", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}]
                 st.session_state.editor_text = ""
@@ -145,20 +142,17 @@ if not st.session_state.is_logged_in:
 
 # ================= 7. 主界面（登录后） =================
 else:
-    # 【拦截器】如果 pre_test_done 是 False，强制显示前测
+    # 强制拦截前测
     if not st.session_state.pre_test_done:
         st.title("请先完成前测问卷")
         st.warning("⚠️ 在开始文献综述任务前，请务必完成以下前测问卷。完成后点击下方按钮进入实验。")
-        
-        # 内嵌前测问卷
         st.components.v1.iframe("https://v.wjx.cn/vm/O608BaM.aspx#", height=800, scrolling=True)
         
         if st.button("✅ 我已提交前测问卷，进入正式实验", type="primary"):
             st.session_state.pre_test_done = True
-            # 【核心逻辑】点击后，立刻将 pre_test_done 写入存档，防止刷新重做
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False, True)
             st.rerun()
-        st.stop() # 阻断下方代码，不让他提前看到实验界面
+        st.stop()
 
     # ---------- 左侧控制面板 ----------
     with st.sidebar:
@@ -193,7 +187,6 @@ else:
                 st.success("✅ 实验已正式结束并保存！请下载文件发送给主试。")
                 st.download_button(label="📥 下载实验数据(CSV)", data=csv, file_name=f"log_{st.session_state.exp_id}.csv", mime="text/csv")
                 
-                # 自动弹出后测问卷
                 st.markdown("---")
                 st.markdown("### 🎉 请完成实验后测问卷")
                 st.components.v1.iframe("https://v.wjx.cn/vm/rpfP2PE.aspx#", height=800, scrolling=True)
@@ -288,7 +281,7 @@ else:
     elif st.session_state.current_tab == "学术文献查阅区":
         record_tab_switch("学术文献查阅区")
         st.subheader("🔍 学术文献查阅区")
-        st.markdown("💡 提示：请在此输入文献标题、作者进行交叉核对。**如需在外部数据库核实，请点击专属链接，核实后请点击下方的确认按钮。**")
+        st.markdown("💡 提示：您可以在此输入文献标题、作者或关键词进行交叉核对。")
         
         search_query = st.text_input("请输入需要核实的检索词：", disabled=disabled_flag)
         
@@ -296,34 +289,36 @@ else:
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Search", "role": "search_query", "content": search_query, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
             
-            st.markdown("### 🇨🇳 中文文献核对")
-            st.info(f"系统已记录您的检索词：『**{search_query}**』。请点击下方按钮前往百度学术，**查阅完毕后请回到本页面点击确认**。")
-            
+            # 百度学术内嵌区
+            st.markdown("### 🇨🇳 中文文献核对（百度学术）")
             encoded_query = urllib.parse.quote(search_query)
             baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
+            st.components.v1.iframe(baidu_url, height=500, scrolling=True)
             
-            st.link_button("👉 前往百度学术核实此文献（点击将在新标签页打开）", baidu_url, type="primary", use_container_width=True)
+            st.link_button("👉 若上方网页未加载，请点击此处跳转百度学术核实", baidu_url, type="secondary", use_container_width=True)
             
-            if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True):
+            # 核实确认闭环
+            if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True, type="primary"):
                 st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Confirm", "role": "search_confirm", "content": f"确认核实了：{search_query}", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
                 st.success("✅ 已记录您的核实行为！")
             
             st.markdown("---")
-
-            st.markdown("### 🌍 OpenAlex 国际学术库")
-            with st.spinner("正在检索全球学术数据库..."):
+            
+            # OpenAlex 补充区
+            st.markdown("### 🌍 OpenAlex 国际学术库（英文文献核对）")
+            with st.spinner("正在检索国际学术数据库..."):
                 try:
                     resp = requests.get(
                         "https://api.openalex.org/works", 
-                        params={"search": search_query, "per-page": 8, "select": "display_name,publication_year,authorships,primary_location,doi", "api_key": "ZN6iRrep1uN1v2FimduMEC"}, 
+                        params={"search": search_query, "per-page": 5, "select": "display_name,publication_year,authorships,primary_location,doi", "api_key": "ZN6iRrep1uN1v2FimduMEC"}, 
                         timeout=20
                     )
                     data = resp.json()
                     results = data.get("results", [])
                     
                     if not results:
-                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。该文献可能不存在或未被收录，请谨慎引用。")
+                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。")
                     else:
                         st.success(f"找到 {data['meta']['count']} 条结果：")
                         for i, work in enumerate(results, 1):
@@ -335,4 +330,4 @@ else:
                                 if work.get("doi"):
                                     st.markdown(f"**DOI**：[{work['doi']}]({work['doi']})")
                 except Exception as e:
-                    st.error(f"检索失败，请检查网络或稍后再试。错误信息：{str(e)[:50]}")
+                    st.error(f"OpenAlex 查询失败：{str(e)[:50]}")
