@@ -70,10 +70,12 @@ def load_data(exp_id):
         with open(path, "r", encoding="utf-8") as f: return json.load(f)
     return None
 
-def save_data(exp_id, messages, logs, editor_text, start_time, final_text, is_finished=False):
+# 新增了 pre_test_done 参数存入 JSON
+def save_data(exp_id, messages, logs, editor_text, start_time, final_text, is_finished=False, pre_test_done=False):
     data = {
         "messages": messages, "logs": logs, "editor_text": editor_text, 
-        "start_time": start_time, "final_text": final_text, "is_finished": is_finished,
+        "start_time": start_time, "final_text": final_text, 
+        "is_finished": is_finished, "pre_test_done": pre_test_done,
         "last_saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     with open(get_save_path(exp_id), "w", encoding="utf-8") as f: 
@@ -96,7 +98,7 @@ if "current_tab" not in st.session_state: st.session_state.current_tab = "AI 对
 if "is_finished" not in st.session_state: st.session_state.is_finished = False
 if "pre_test_done" not in st.session_state: st.session_state.pre_test_done = False
 
-# ================= 6. 登录与【前测问卷】面板 =================
+# ================= 6. 登录与恢复面板 =================
 if not st.session_state.is_logged_in:
     st.title("实验Agent - 登录")
     st.info("请输入您的被试编号（如 S01）。如果中途退出，输入相同编号即可恢复进度。")
@@ -111,26 +113,29 @@ if not st.session_state.is_logged_in:
                 if saved_data.get("is_finished", False):
                     st.error("⚠️ 该被试编号已完成实验并提交数据。为保证数据有效性，无法再次进入。感谢您的参与！")
                 else:
+                    # 【核心逻辑】恢复历史进度，读取 pre_test_done 状态
                     st.session_state.messages = saved_data["messages"]
                     st.session_state.logs = saved_data["logs"]
                     st.session_state.editor_text = saved_data["editor_text"]
                     st.session_state.final_text = saved_data.get("final_text", "")
                     st.session_state.start_time = saved_data["start_time"]
                     st.session_state.is_finished = False
-                    st.session_state.pre_test_done = True # 恢复进度默认已过前测
+                    st.session_state.pre_test_done = saved_data.get("pre_test_done", False) # 如果之前做了，这里就是True
+                    
                     st.success(f"成功恢复编号 {login_id} 的进度！")
                     st.session_state.is_logged_in = True
                     time.sleep(1)
                     st.rerun()
             else:
+                # 【核心逻辑】全新实验，前测设为 False
                 st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
                 st.session_state.logs = [{"experiment_id": login_id, "elapsed_seconds": 0, "role": "system_start", "content": "实验正式开始", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}]
                 st.session_state.editor_text = ""
                 st.session_state.final_text = ""
                 st.session_state.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 st.session_state.is_finished = False
-                st.session_state.pre_test_done = False # 新实验需先做前测
-                save_data(login_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False)
+                st.session_state.pre_test_done = False 
+                save_data(login_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False, False)
                 st.success(f"新实验已开启！请先完成前测问卷。")
                 st.session_state.is_logged_in = True
                 time.sleep(1)
@@ -138,26 +143,22 @@ if not st.session_state.is_logged_in:
         else:
             st.warning("请输入编号！")
 
-    st.markdown("---")
-    st.markdown("### 📝 实验前测问卷")
-    st.write("请完成以下问卷，完成后即可进入正式实验任务。")
-    st.components.v1.iframe("https://v.wjx.cn/vm/O608BaM.aspx#", height=800, scrolling=True)
-    
-    if st.button("✅ 我已提交前测问卷，进入正式实验", type="primary"):
-        st.session_state.pre_test_done = True
-        st.rerun()
-
 # ================= 7. 主界面（登录后） =================
 else:
-    # 【拦截器】前测没做，强制留在前测页面
+    # 【拦截器】如果 pre_test_done 是 False，强制显示前测
     if not st.session_state.pre_test_done:
         st.title("请先完成前测问卷")
-        st.warning("⚠️ 在开始文献综述任务前，请务必完成以下前测问卷。")
+        st.warning("⚠️ 在开始文献综述任务前，请务必完成以下前测问卷。完成后点击下方按钮进入实验。")
+        
+        # 内嵌前测问卷
         st.components.v1.iframe("https://v.wjx.cn/vm/O608BaM.aspx#", height=800, scrolling=True)
+        
         if st.button("✅ 我已提交前测问卷，进入正式实验", type="primary"):
             st.session_state.pre_test_done = True
+            # 【核心逻辑】点击后，立刻将 pre_test_done 写入存档，防止刷新重做
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False, True)
             st.rerun()
-        st.stop()
+        st.stop() # 阻断下方代码，不让他提前看到实验界面
 
     # ---------- 左侧控制面板 ----------
     with st.sidebar:
@@ -185,14 +186,14 @@ else:
                 st.session_state.is_finished = True
                 st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "End", "role": "final_text", "content": st.session_state.final_text, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 
-                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, True)
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, True, True)
                 
                 df = pd.DataFrame(st.session_state.logs)
                 csv = df.to_csv(index=False, encoding="utf-8-sig")
                 st.success("✅ 实验已正式结束并保存！请下载文件发送给主试。")
                 st.download_button(label="📥 下载实验数据(CSV)", data=csv, file_name=f"log_{st.session_state.exp_id}.csv", mime="text/csv")
                 
-                # 【后测问卷展示】
+                # 自动弹出后测问卷
                 st.markdown("---")
                 st.markdown("### 🎉 请完成实验后测问卷")
                 st.components.v1.iframe("https://v.wjx.cn/vm/rpfP2PE.aspx#", height=800, scrolling=True)
@@ -215,7 +216,7 @@ else:
                 "role": "tab_switch", "content": f"切换至：{tab_name}",
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             })
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
             st.session_state.last_tab = tab_name
 
     # 模块一：AI 对话交互区
@@ -235,7 +236,7 @@ else:
             
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "user", "content": prompt, "is_questioning": has_questioning, "time": current_time})
             st.session_state.messages.append({"role": "user", "content": prompt})
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
             with st.chat_message("user"): st.markdown(prompt)
 
             with st.chat_message("assistant"):
@@ -257,7 +258,7 @@ else:
                         st.markdown(reply)
                         st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "assistant", "content": reply, "is_questioning": False, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                         st.session_state.messages.append({"role": "assistant", "content": reply})
-                        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
+                        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
                     except Exception as e:
                         st.error(f"网络波动，请重试。错误信息：{str(e)[:50]}")
                         st.session_state.messages.pop() 
@@ -274,7 +275,7 @@ else:
             st.session_state.editor_text = st.session_state.temp_editor
             char_num = len(st.session_state.editor_text.replace(" ", "").replace("\n", ""))
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Edit", "role": "edit_action", "content": f"字数变更为：{char_num}字", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
             
         st.text_area("在此编辑您的文献综述（建议 800-1000 字）：", value=st.session_state.editor_text, height=500, key="temp_editor", on_change=update_editor, disabled=disabled_flag)
         
@@ -293,7 +294,7 @@ else:
         
         if search_query:
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Search", "role": "search_query", "content": search_query, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
             
             st.markdown("### 🇨🇳 中文文献核对")
             st.info(f"系统已记录您的检索词：『**{search_query}**』。请点击下方按钮前往百度学术，**查阅完毕后请回到本页面点击确认**。")
@@ -305,7 +306,7 @@ else:
             
             if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True):
                 st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Confirm", "role": "search_confirm", "content": f"确认核实了：{search_query}", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
                 st.success("✅ 已记录您的核实行为！")
             
             st.markdown("---")
