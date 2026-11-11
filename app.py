@@ -94,8 +94,9 @@ if "start_time" not in st.session_state: st.session_state.start_time = None
 if "is_logged_in" not in st.session_state: st.session_state.is_logged_in = False
 if "current_tab" not in st.session_state: st.session_state.current_tab = "AI 对话交互区"
 if "is_finished" not in st.session_state: st.session_state.is_finished = False
+if "pre_test_done" not in st.session_state: st.session_state.pre_test_done = False
 
-# ================= 6. 登录/恢复面板 =================
+# ================= 6. 登录与【前测问卷】面板 =================
 if not st.session_state.is_logged_in:
     st.title("实验Agent - 登录")
     st.info("请输入您的被试编号（如 S01）。如果中途退出，输入相同编号即可恢复进度。")
@@ -116,6 +117,7 @@ if not st.session_state.is_logged_in:
                     st.session_state.final_text = saved_data.get("final_text", "")
                     st.session_state.start_time = saved_data["start_time"]
                     st.session_state.is_finished = False
+                    st.session_state.pre_test_done = True # 恢复进度默认已过前测
                     st.success(f"成功恢复编号 {login_id} 的进度！")
                     st.session_state.is_logged_in = True
                     time.sleep(1)
@@ -127,16 +129,36 @@ if not st.session_state.is_logged_in:
                 st.session_state.final_text = ""
                 st.session_state.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 st.session_state.is_finished = False
+                st.session_state.pre_test_done = False # 新实验需先做前测
                 save_data(login_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False)
-                st.success(f"新实验已开启！编号：{login_id}")
+                st.success(f"新实验已开启！请先完成前测问卷。")
                 st.session_state.is_logged_in = True
                 time.sleep(1)
                 st.rerun()
         else:
             st.warning("请输入编号！")
 
+    st.markdown("---")
+    st.markdown("### 📝 实验前测问卷")
+    st.write("请完成以下问卷，完成后即可进入正式实验任务。")
+    st.components.v1.iframe("https://v.wjx.cn/vm/O608BaM.aspx#", height=800, scrolling=True)
+    
+    if st.button("✅ 我已提交前测问卷，进入正式实验", type="primary"):
+        st.session_state.pre_test_done = True
+        st.rerun()
+
 # ================= 7. 主界面（登录后） =================
 else:
+    # 【拦截器】前测没做，强制留在前测页面
+    if not st.session_state.pre_test_done:
+        st.title("请先完成前测问卷")
+        st.warning("⚠️ 在开始文献综述任务前，请务必完成以下前测问卷。")
+        st.components.v1.iframe("https://v.wjx.cn/vm/O608BaM.aspx#", height=800, scrolling=True)
+        if st.button("✅ 我已提交前测问卷，进入正式实验", type="primary"):
+            st.session_state.pre_test_done = True
+            st.rerun()
+        st.stop()
+
     # ---------- 左侧控制面板 ----------
     with st.sidebar:
         st.markdown(f"### 👤 被试编号：{st.session_state.exp_id}")
@@ -154,7 +176,7 @@ else:
             st.session_state.current_tab = "学术文献查阅区"; st.rerun()
         
         st.markdown("---")
-        st.markdown("### 📥 任务提交")
+        st.markdown("### 📥 任务提交与后测")
         
         st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
         
@@ -167,13 +189,19 @@ else:
                 
                 df = pd.DataFrame(st.session_state.logs)
                 csv = df.to_csv(index=False, encoding="utf-8-sig")
-                st.success("✅ 实验已正式结束并保存！请下载文件发送给主试，然后关闭网页。")
+                st.success("✅ 实验已正式结束并保存！请下载文件发送给主试。")
                 st.download_button(label="📥 下载实验数据(CSV)", data=csv, file_name=f"log_{st.session_state.exp_id}.csv", mime="text/csv")
+                
+                # 【后测问卷展示】
+                st.markdown("---")
+                st.markdown("### 🎉 请完成实验后测问卷")
+                st.components.v1.iframe("https://v.wjx.cn/vm/rpfP2PE.aspx#", height=800, scrolling=True)
+                st.info("完成问卷后，您可以关闭本网页。感谢您的参与！")
             else:
                 st.warning("字数太少，请检查后再结束实验！")
         
         if st.session_state.is_finished:
-            st.info("您已提交数据，当前页面仅供查看，无法再修改。")
+            st.info("您已提交数据。请在上方完成最后的问卷。")
 
     # ---------- 右侧主工作区 ----------
     disabled_flag = st.session_state.is_finished
@@ -267,7 +295,6 @@ else:
             st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Search", "role": "search_query", "content": search_query, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
             
-            # 中文文献检索跳转区
             st.markdown("### 🇨🇳 中文文献核对")
             st.info(f"系统已记录您的检索词：『**{search_query}**』。请点击下方按钮前往百度学术，**查阅完毕后请回到本页面点击确认**。")
             
@@ -276,7 +303,6 @@ else:
             
             st.link_button("👉 前往百度学术核实此文献（点击将在新标签页打开）", baidu_url, type="primary", use_container_width=True)
             
-            # 核实确认闭环
             if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True):
                 st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Confirm", "role": "search_confirm", "content": f"确认核实了：{search_query}", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                 save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished)
@@ -284,18 +310,12 @@ else:
             
             st.markdown("---")
 
-            # OpenAlex 国际学术库（专属 Key 已填入）
             st.markdown("### 🌍 OpenAlex 国际学术库")
             with st.spinner("正在检索全球学术数据库..."):
                 try:
                     resp = requests.get(
                         "https://api.openalex.org/works", 
-                        params={
-                            "search": search_query, 
-                            "per-page": 8, 
-                            "select": "display_name,publication_year,authorships,primary_location,doi", 
-                            "api_key": "ZN6iRrep1uN1v2FimduMEC"
-                        }, 
+                        params={"search": search_query, "per-page": 8, "select": "display_name,publication_year,authorships,primary_location,doi", "api_key": "ZN6iRrep1uN1v2FimduMEC"}, 
                         timeout=20
                     )
                     data = resp.json()
