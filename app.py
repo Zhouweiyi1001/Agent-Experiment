@@ -13,7 +13,7 @@ import time
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# ================= 2. 页面配置与全局字体放大（最新版CSS） =================
+# ================= 2. 页面配置与全局字体放大 =================
 st.set_page_config(page_title="实验Agent", layout="wide")
 
 st.markdown("""
@@ -284,11 +284,20 @@ else:
             
             st.markdown("---")
 
-            # OpenAlex 国际学术库
+            # OpenAlex 国际学术库（专属 Key 已填入）
             st.markdown("### 🌍 OpenAlex 国际学术库")
             with st.spinner("正在检索全球学术数据库..."):
                 try:
-                    resp = requests.get("https://api.openalex.org/works", params={"search": search_query, "per-page": 8, "select": "display_name,publication_year,authorships,primary_location,doi", "mailto": "你的邮箱@example.com"}, timeout=15)
+                    resp = requests.get(
+                        "https://api.openalex.org/works", 
+                        params={
+                            "search": search_query, 
+                            "per-page": 8, 
+                            "select": "display_name,publication_year,authorships,primary_location,doi", 
+                            "api_key": "ZN6iRrep1uN1v2FimduMEC"
+                        }, 
+                        timeout=20
+                    )
                     data = resp.json()
                     results = data.get("results", [])
                     
@@ -305,4 +314,4 @@ else:
                                 if work.get("doi"):
                                     st.markdown(f"**DOI**：[{work['doi']}]({work['doi']})")
                 except Exception as e:
-                    st.error(f"检索失败，请检查网络。错误信息：{str(e)[:50]}")
+                    st.error(f"检索失败，请检查网络或稍后再试。错误信息：{str(e)[:50]}")
