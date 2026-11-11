@@ -290,7 +290,7 @@ else:
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
             
             # 百度学术内嵌区
-            st.markdown("### 🇨🇳 中文文献核对（百度学术）")
+            st.markdown("### 🌐 百度学术检索结果")
             encoded_query = urllib.parse.quote(search_query)
             baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
             st.components.v1.iframe(baidu_url, height=500, scrolling=True)
@@ -306,7 +306,7 @@ else:
             st.markdown("---")
             
             # OpenAlex 补充区
-            st.markdown("### 🌍 OpenAlex 国际学术库（英文文献核对）")
+            st.markdown("### 🌍 OpenAlex 国际学术库")
             with st.spinner("正在检索国际学术数据库..."):
                 try:
                     resp = requests.get(
