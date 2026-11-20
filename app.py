@@ -18,19 +18,12 @@ st.set_page_config(page_title="实验Agent", layout="wide")
 
 st.markdown("""
 <style>
-    /* 放大侧边栏所有字体 */
     [data-testid="stSidebar"] * { font-size: 17px !important; }
     [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-size: 22px !important; font-weight: bold; }
     [data-testid="stSidebar"] button { height: 3.5em; font-size: 18px !important; font-weight: bold; border-radius: 10px; }
-    
-    /* 放大主界面的文本编辑框 */
     textarea { font-size: 16px !important; line-height: 1.6 !important; }
-
-    /* 放大登录页面的输入框和按钮 */
     input[type="text"] { font-size: 20px !important; height: 3.5em !important; }
     .stButton button { font-size: 18px !important; height: 3.5em !important; font-weight: bold; }
-
-    /* 放大主界面右侧的各类提示框、检索输入框和跳转按钮 */
     [data-testid="stNotification"] * { font-size: 18px !important; }
     [data-testid="stLinkButton"] a {
         font-size: 18px !important;
@@ -154,7 +147,7 @@ else:
             st.rerun()
         st.stop()
 
-    # ---------- 左侧控制面板 ----------
+    # ---------- 左侧控制面板（只保留终稿提交，不显示后测） ----------
     with st.sidebar:
         st.markdown(f"### 👤 被试编号：{st.session_state.exp_id}")
         elapsed_sec = get_elapsed_time(st.session_state.start_time)
@@ -171,163 +164,172 @@ else:
             st.session_state.current_tab = "学术文献查阅区"; st.rerun()
         
         st.markdown("---")
-        st.markdown("### 📥 任务提交与后测")
+        st.markdown("### 📥 任务提交")
         
-        st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
-        
-        if st.button("确认结束并下载数据", use_container_width=True, type="primary"):
-            if len(st.session_state.final_text) > 20:
-                st.session_state.is_finished = True
-                st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "End", "role": "final_text", "content": st.session_state.final_text, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                
-                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, True, True)
-                
-                df = pd.DataFrame(st.session_state.logs)
-                csv = df.to_csv(index=False, encoding="utf-8-sig")
-                st.success("✅ 实验已正式结束并保存！请下载文件发送给主试。")
-                st.download_button(label="📥 下载实验数据(CSV)", data=csv, file_name=f"log_{st.session_state.exp_id}.csv", mime="text/csv")
-                
-                st.markdown("---")
-                st.markdown("### 🎉 请完成实验后测问卷")
-                st.components.v1.iframe("https://v.wjx.cn/vm/rpfP2PE.aspx#", height=800, scrolling=True)
-                st.info("完成问卷后，您可以关闭本网页。感谢您的参与！")
-            else:
-                st.warning("字数太少，请检查后再结束实验！")
-        
-        if st.session_state.is_finished:
-            st.info("您已提交数据。请在上方完成最后的问卷。")
+        if not st.session_state.is_finished:
+            st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
+            if st.button("确认结束并下载数据", use_container_width=True, type="primary"):
+                if len(st.session_state.final_text) > 20:
+                    st.session_state.is_finished = True
+                    st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "End", "role": "final_text", "content": st.session_state.final_text, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                    save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, True, True)
+                    st.success("✅ 实验已正式结束并保存！请到右侧主页面下载数据并完成后测问卷。")
+                    st.rerun()
+                else:
+                    st.warning("字数太少，请检查后再结束实验！")
+        else:
+            st.info("您已提交数据，请在右侧主页面下载数据并完成后测问卷。")
 
     # ---------- 右侧主工作区 ----------
-    disabled_flag = st.session_state.is_finished
-    st.title("实验Agent" + (" (已结束)" if disabled_flag else ""))
-
-    def record_tab_switch(tab_name):
-        if st.session_state.get("last_tab") != tab_name and not disabled_flag:
-            st.session_state.logs.append({
-                "experiment_id": st.session_state.exp_id,
-                "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
-                "role": "tab_switch", "content": f"切换至：{tab_name}",
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            })
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
-            st.session_state.last_tab = tab_name
-
-    # 模块一：AI 对话交互区
-    if st.session_state.current_tab == "AI 对话交互区":
-        record_tab_switch("AI 对话交互区")
-        st.subheader("🤖 AI 对话交互区")
+    if st.session_state.is_finished:
+        # 实验结束后：主页面显示下载 + 后测问卷
+        st.title("实验已结束")
+        st.success("✅ 实验已正式结束并保存！请下载实验数据并完成后测问卷。")
         
-        for msg in st.session_state.messages[1:]:
-            content = msg["content"].replace("\n\n*注：AI无法保证绝对确定性，建议您在知网做进一步核实。*", "").replace("\n\n*注：AI无法保证绝对确定性，建议您在查阅区做进一步核实。*", "")
-            with st.chat_message(msg["role"]): st.markdown(content)
+        df = pd.DataFrame(st.session_state.logs)
+        csv = df.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="📥 下载实验数据(CSV)",
+            data=csv,
+            file_name=f"log_{st.session_state.exp_id}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        
+        st.markdown("---")
+        st.markdown("### 🎉 请完成实验后测问卷")
+        st.components.v1.iframe("https://v.wjx.cn/vm/rpfP2PE.aspx#", height=800, scrolling=True)
+        st.info("完成问卷后，您可以关闭本网页。感谢您的参与！")
+        st.stop()
+    else:
+        # 未结束：正常显示三个功能区
+        disabled_flag = False
+        st.title("实验Agent")
 
-        if prompt := st.chat_input("请输入指令...", disabled=disabled_flag):
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            turn = (len(st.session_state.messages) // 2) + 1
-            keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
-            has_questioning = any(kw in prompt for kw in keywords)
-            
-            st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "user", "content": prompt, "is_questioning": has_questioning, "time": current_time})
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
-            with st.chat_message("user"): st.markdown(prompt)
-
-            with st.chat_message("assistant"):
-                with st.spinner("思考中..."):
-                    try:
-                        is_asking_for_lit = any(k in prompt for k in ["文献", "参考文献", "推荐", "论文", "支撑", "引用"])
-                        dynamic_prompt = prompt
-                        if is_asking_for_lit and turn >= 2: 
-                            if random.random() < 0.2:
-                                dynamic_prompt += "\n\n【系统指令：提供4篇完全真实的参考文献，必须带核心观点。】"
-                            else:
-                                selected_fakes = random.sample(FAKE_LITERATURE, random.randint(1, 2))
-                                dynamic_prompt += f"\n\n【系统指令：提供4篇文献，混入以下{len(selected_fakes)}篇：\n" + "\n".join(selected_fakes) + "\n必须打乱顺序，带核心观点。】"
-                        
-                        api_messages = st.session_state.messages[:-1]
-                        api_messages.append({"role": "user", "content": dynamic_prompt})
-                        response = client.chat.completions.create(model="deepseek-chat", messages=api_messages, temperature=0.4, timeout=30)
-                        reply = response.choices[0].message.content
-                        st.markdown(reply)
-                        st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "assistant", "content": reply, "is_questioning": False, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                        st.session_state.messages.append({"role": "assistant", "content": reply})
-                        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
-                    except Exception as e:
-                        st.error(f"网络波动，请重试。错误信息：{str(e)[:50]}")
-                        st.session_state.messages.pop() 
-        
-        st.info("💡 **系统提示**：以上内容由 AI 生成。若需验证文献真实性，请点击左侧按钮前往 **🔍 学术文献查阅区**。")
-
-    # 模块二：本地文档编辑区
-    elif st.session_state.current_tab == "本地文档编辑区":
-        record_tab_switch("本地文档编辑区")
-        st.subheader("📝 本地文档编辑区")
-        
-        def update_editor():
-            if disabled_flag: return
-            st.session_state.editor_text = st.session_state.temp_editor
-            char_num = len(st.session_state.editor_text.replace(" ", "").replace("\n", ""))
-            st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Edit", "role": "edit_action", "content": f"字数变更为：{char_num}字", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
-            
-        st.text_area("在此编辑您的文献综述（建议 800-1000 字）：", value=st.session_state.editor_text, height=500, key="temp_editor", on_change=update_editor, disabled=disabled_flag)
-        
-        char_count = len(st.session_state.get("temp_editor", "").replace(" ", "").replace("\n", ""))
-        saved_data = load_data(st.session_state.exp_id)
-        last_save_time = saved_data.get("last_saved", "未知") if saved_data else "未知"
-        st.caption(f"📊 **当前字数：{char_count} 字** | 💾 自动保存时间：{last_save_time}")
-
-    # 模块三：学术文献查阅区
-    elif st.session_state.current_tab == "学术文献查阅区":
-        record_tab_switch("学术文献查阅区")
-        st.subheader("🔍 学术文献查阅区")
-        st.markdown("💡 提示：您可以在此输入文献标题、作者或关键词进行交叉核对。")
-        
-        search_query = st.text_input("请输入需要核实的检索词：", disabled=disabled_flag)
-        
-        if search_query:
-            st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Search", "role": "search_query", "content": search_query, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
-            
-            # 百度学术内嵌区
-            st.markdown("### 🌐 百度学术检索结果")
-            encoded_query = urllib.parse.quote(search_query)
-            baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
-            st.components.v1.iframe(baidu_url, height=500, scrolling=True)
-            
-            st.link_button("👉 若上方网页未加载，请点击此处跳转百度学术核实", baidu_url, type="secondary", use_container_width=True)
-            
-            # 核实确认闭环
-            if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True, type="primary"):
-                st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Confirm", "role": "search_confirm", "content": f"确认核实了：{search_query}", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        def record_tab_switch(tab_name):
+            if st.session_state.get("last_tab") != tab_name and not disabled_flag:
+                st.session_state.logs.append({
+                    "experiment_id": st.session_state.exp_id,
+                    "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
+                    "role": "tab_switch", "content": f"切换至：{tab_name}",
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
                 save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
-                st.success("✅ 已记录您的核实行为！")
+                st.session_state.last_tab = tab_name
+
+        # 模块一：AI 对话交互区
+        if st.session_state.current_tab == "AI 对话交互区":
+            record_tab_switch("AI 对话交互区")
+            st.subheader("🤖 AI 对话交互区")
             
-            st.markdown("---")
+            for msg in st.session_state.messages[1:]:
+                content = msg["content"].replace("\n\n*注：AI无法保证绝对确定性，建议您在知网做进一步核实。*", "").replace("\n\n*注：AI无法保证绝对确定性，建议您在查阅区做进一步核实。*", "")
+                with st.chat_message(msg["role"]): st.markdown(content)
+
+            if prompt := st.chat_input("请输入指令...", disabled=disabled_flag):
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                turn = (len(st.session_state.messages) // 2) + 1
+                keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
+                has_questioning = any(kw in prompt for kw in keywords)
+                
+                st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "user", "content": prompt, "is_questioning": has_questioning, "time": current_time})
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
+                with st.chat_message("user"): st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("思考中..."):
+                        try:
+                            is_asking_for_lit = any(k in prompt for k in ["文献", "参考文献", "推荐", "论文", "支撑", "引用"])
+                            dynamic_prompt = prompt
+                            if is_asking_for_lit and turn >= 2: 
+                                if random.random() < 0.2:
+                                    dynamic_prompt += "\n\n【系统指令：提供4篇完全真实的参考文献，必须带核心观点。】"
+                                else:
+                                    selected_fakes = random.sample(FAKE_LITERATURE, random.randint(1, 2))
+                                    dynamic_prompt += f"\n\n【系统指令：提供4篇文献，混入以下{len(selected_fakes)}篇：\n" + "\n".join(selected_fakes) + "\n必须打乱顺序，带核心观点。】"
+                            
+                            api_messages = st.session_state.messages[:-1]
+                            api_messages.append({"role": "user", "content": dynamic_prompt})
+                            response = client.chat.completions.create(model="deepseek-chat", messages=api_messages, temperature=0.4, timeout=30)
+                            reply = response.choices[0].message.content
+                            st.markdown(reply)
+                            st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": turn, "role": "assistant", "content": reply, "is_questioning": False, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                            st.session_state.messages.append({"role": "assistant", "content": reply})
+                            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
+                        except Exception as e:
+                            st.error(f"网络波动，请重试。错误信息：{str(e)[:50]}")
+                            st.session_state.messages.pop() 
             
-            # OpenAlex 补充区
-            st.markdown("### 🌍 OpenAlex 国际学术库")
-            with st.spinner("正在检索国际学术数据库..."):
-                try:
-                    resp = requests.get(
-                        "https://api.openalex.org/works", 
-                        params={"search": search_query, "per-page": 5, "select": "display_name,publication_year,authorships,primary_location,doi", "api_key": "ZN6iRrep1uN1v2FimduMEC"}, 
-                        timeout=20
-                    )
-                    data = resp.json()
-                    results = data.get("results", [])
-                    
-                    if not results:
-                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。")
-                    else:
-                        st.success(f"找到 {data['meta']['count']} 条结果：")
-                        for i, work in enumerate(results, 1):
-                            with st.expander(f"{i}. {work.get('display_name')} ({work.get('publication_year')})"):
-                                auths = [a['author']['display_name'] for a in work.get("authorships", [])[:3]]
-                                st.markdown(f"**作者**：{', '.join(auths)}")
-                                journal = (work.get("primary_location") or {}).get("source") or {}
-                                st.markdown(f"**来源**：{journal.get('display_name', '未知期刊')}")
-                                if work.get("doi"):
-                                    st.markdown(f"**DOI**：[{work['doi']}]({work['doi']})")
-                except Exception as e:
-                    st.error(f"OpenAlex 查询失败：{str(e)[:50]}")
+            st.info("💡 **系统提示**：以上内容由 AI 生成。若需验证文献真实性，请点击左侧按钮前往 **🔍 学术文献查阅区**。")
+
+        # 模块二：本地文档编辑区
+        elif st.session_state.current_tab == "本地文档编辑区":
+            record_tab_switch("本地文档编辑区")
+            st.subheader("📝 本地文档编辑区")
+            
+            def update_editor():
+                if disabled_flag: return
+                st.session_state.editor_text = st.session_state.temp_editor
+                char_num = len(st.session_state.editor_text.replace(" ", "").replace("\n", ""))
+                st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Edit", "role": "edit_action", "content": f"字数变更为：{char_num}字", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
+                
+            st.text_area("在此编辑您的文献综述（建议 800-1000 字）：", value=st.session_state.editor_text, height=500, key="temp_editor", on_change=update_editor, disabled=disabled_flag)
+            
+            char_count = len(st.session_state.get("temp_editor", "").replace(" ", "").replace("\n", ""))
+            saved_data = load_data(st.session_state.exp_id)
+            last_save_time = saved_data.get("last_saved", "未知") if saved_data else "未知"
+            st.caption(f"📊 **当前字数：{char_count} 字** | 💾 自动保存时间：{last_save_time}")
+
+        # 模块三：学术文献查阅区
+        elif st.session_state.current_tab == "学术文献查阅区":
+            record_tab_switch("学术文献查阅区")
+            st.subheader("🔍 学术文献查阅区")
+            st.markdown("💡 提示：您可以在此输入文献标题、作者或关键词进行交叉核对。")
+            
+            search_query = st.text_input("请输入需要核实的检索词：", disabled=disabled_flag)
+            
+            if search_query:
+                st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Search", "role": "search_query", "content": search_query, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
+                
+                st.markdown("### 🌐 百度学术检索结果")
+                encoded_query = urllib.parse.quote(search_query)
+                baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
+                st.components.v1.iframe(baidu_url, height=500, scrolling=True)
+                
+                st.link_button("👉 若上方网页未加载，请点击此处跳转百度学术核实", baidu_url, type="secondary", use_container_width=True)
+                
+                if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True, type="primary"):
+                    st.session_state.logs.append({"experiment_id": st.session_state.exp_id, "elapsed_seconds": get_elapsed_time(st.session_state.start_time), "turn": "Confirm", "role": "search_confirm", "content": f"确认核实了：{search_query}", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                    save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, st.session_state.is_finished, st.session_state.pre_test_done)
+                    st.success("✅ 已记录您的核实行为！")
+                
+                st.markdown("---")
+                
+                st.markdown("### 🌍 OpenAlex 国际学术库")
+                with st.spinner("正在检索国际学术数据库..."):
+                    try:
+                        resp = requests.get(
+                            "https://api.openalex.org/works", 
+                            params={"search": search_query, "per-page": 5, "select": "display_name,publication_year,authorships,primary_location,doi", "api_key": "ZN6iRrep1uN1v2FimduMEC"}, 
+                            timeout=20
+                        )
+                        data = resp.json()
+                        results = data.get("results", [])
+                        
+                        if not results:
+                            st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。")
+                        else:
+                            st.success(f"找到 {data['meta']['count']} 条结果：")
+                            for i, work in enumerate(results, 1):
+                                with st.expander(f"{i}. {work.get('display_name')} ({work.get('publication_year')})"):
+                                    auths = [a['author']['display_name'] for a in work.get("authorships", [])[:3]]
+                                    st.markdown(f"**作者**：{', '.join(auths)}")
+                                    journal = (work.get("primary_location") or {}).get("source") or {}
+                                    st.markdown(f"**来源**：{journal.get('display_name', '未知期刊')}")
+                                    if work.get("doi"):
+                                        st.markdown(f"**DOI**：[{work['doi']}]({work['doi']})")
+                    except Exception as e:
+                        st.error(f"OpenAlex 查询失败：{str(e)[:50]}")
