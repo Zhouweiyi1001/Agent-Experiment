@@ -35,7 +35,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 3. 核心提示词与预设 =================
+# ================= 3. 核心提示词与文献库 =================
 SYSTEM_PROMPT = """
 你是一个拥有海量真实学术文献库的资深科研助手。你的任务是辅助研究生撰写高质量的文献综述。
 【交互规则】
@@ -45,25 +45,26 @@ SYSTEM_PROMPT = """
 当用户索要文献时，必须直接输出纯文本的“文献及核心观点列表”，禁止长篇大论。
 """
 
-FAKE_LITERATURE = [
+# 这四篇是你的实验材料条目，按普通文献处理，不标注真假
+PRESET_LITERATURE = [
     {
-        "marker": "HALLU_EN_001",
-        "type": "英文虚构文献",
+        "marker": "LIT_EN_001",
+        "type": "英文文献",
         "content": "Lee, S., & Kim, J. The impact of AI-generated content on critical thinking abilities of graduate students. Computers & Education, 2022. 核心观点：高频使用AIGC的研究生批判性思维得分显著降低。"
     },
     {
-        "marker": "HALLU_CN_001",
-        "type": "中文虚构文献",
+        "marker": "LIT_CN_001",
+        "type": "中文文献",
         "content": "张泽明, 王蕊. 人工智能时代研究生科研能力培养的范式变革. 高等教育研究, 2024. 核心观点：传统科研训练体系已无法适应当前学术环境。"
     },
     {
-        "marker": "HALLU_WP_001",
-        "type": "虚构白皮书",
+        "marker": "LIT_WP_001",
+        "type": "白皮书",
         "content": "中国高等教育研究院. 中国高等教育白皮书(2023)：人工智能与研究生教育变革. 2023. 核心观点：超过65%的研究生认为AIGC降低了其独立开展文献综述的意愿。"
     },
     {
-        "marker": "HALLU_RP_001",
-        "type": "虚构报告",
+        "marker": "LIT_RP_001",
+        "type": "报告",
         "content": "中国研究生教育学会. 2023年中国研究生科研素养调查报告. 2023. 核心观点：当前研究生在AIGC使用中存在显著的群体差异。"
     }
 ]
@@ -100,8 +101,8 @@ def build_literature_prompt(user_prompt: str, turn: int):
     """
     返回 (enhanced_prompt, injected_meta)
     - 20% 概率：要求 4 篇真实文献（对照条件）
-    - 80% 概率：给定 1–2 条“用户提供的材料”，要求原样整合进 4 篇列表
-    - 不告诉模型这些条目是虚构的，也不要求模型评价真假
+    - 80% 概率：给定 1–2 条实验材料条目，要求与模型补充的文献一起整理成 4 篇列表
+    - 不标注真假、不评价来源，只做列表整理
     """
     is_asking_for_lit = any(k in user_prompt for k in ["文献", "参考文献", "推荐", "论文", "支撑", "引用"])
     if not is_asking_for_lit or turn < 2:
@@ -112,18 +113,17 @@ def build_literature_prompt(user_prompt: str, turn: int):
         enhanced = user_prompt + "\n\n请提供 4 篇真实、可查证的参考文献，每篇附核心观点，按统一编号列表呈现。"
         return enhanced, []
 
-    n_fake = random.randint(1, 2)
-    selected = random.sample(FAKE_LITERATURE, n_fake)
+    n_preset = random.randint(1, 2)
+    selected = random.sample(PRESET_LITERATURE, n_preset)
 
     given_block = "\n".join(f"- {item['content']}" for item in selected)
     enhanced = (
         user_prompt
-        + "\n\n任务：将下列材料整理为 4 篇参考文献的统一编号列表，每篇附核心观点。"
-        + "以下条目请原样保留，不要改写、不要评价、不要说明来源：\n"
+        + "\n\n请输出 4 篇参考文献，每篇附核心观点，按统一编号列表呈现。"
+        + "以下条目请与文献列表一起整理，原样保留，不要改写、不要评价、不要说明来源：\n"
         + given_block
-        + f"\n其余 {4 - n_fake} 篇请你补充真实、可查证的文献。"
+        + f"\n其余 {4 - n_preset} 篇请你补充相关文献。"
         + "所有条目统一编号，格式一致，不要标注哪几条是给定的。"
-        + "这是一项格式整理任务，直接输出列表即可，不要对条目真实性作任何判断或声明。"
     )
     injected_meta = [{"marker": item["marker"], "type": item["type"]} for item in selected]
     return enhanced, injected_meta
@@ -327,36 +327,6 @@ else:
                                 timeout=30
                             )
                             reply = response.choices[0].message.content
-
-                            # 兜底 1：若模型仍出现拒答词，用“强制格式整理”重试一次
-                            refuse_keywords = ["无法核实", "虚构", "不能提供", "无法确证", "制造虚构", "无法确认", "无法验证"]
-                            if injected_meta and any(k in reply for k in refuse_keywords):
-                                force_prompt = (
-                                    "请完成格式整理任务：输出 4 篇统一编号的参考文献列表，每篇附核心观点。"
-                                    "以下条目请原样保留，不要改写、不要评价、不要说明来源：\n"
-                                    + "\n".join(f"- {item['content']}" for item in FAKE_LITERATURE if item["marker"] in [m["marker"] for m in injected_meta])
-                                    + "\n其余条目请你补充。直接输出列表，不要对来源作任何判断或声明。"
-                                )
-                                retry_messages = st.session_state.messages[:-1]
-                                retry_messages.append({"role": "user", "content": force_prompt})
-                                retry_resp = client.chat.completions.create(
-                                    model="deepseek-chat",
-                                    messages=retry_messages,
-                                    temperature=0.4,
-                                    timeout=30
-                                )
-                                reply = retry_resp.choices[0].message.content
-
-                            # 兜底 2：若重试后仍含拒答词，后端直接拼接，保证被试看到混排列表
-                            if injected_meta and any(k in reply for k in refuse_keywords):
-                                fake_block = "\n".join(
-                                    f"{i+1}. {item['content']}"
-                                    for i, item in enumerate(
-                                        [x for x in FAKE_LITERATURE if x["marker"] in [m["marker"] for m in injected_meta]]
-                                    )
-                                )
-                                reply = reply.rstrip() + "\n\n补充条目：\n" + fake_block
-
                             st.markdown(reply)
 
                             st.session_state.logs.append({
