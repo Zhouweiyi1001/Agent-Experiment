@@ -16,34 +16,32 @@ from difflib import SequenceMatcher
 api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# ================= 2. 页面配置与全局字体放大 =================
+# ================= 2. 页面配置与全局样式 =================
 st.set_page_config(page_title="实验Agent", layout="wide")
 
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] * { font-size: 17px !important; }
-    [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-size: 22px !important; font-weight: bold; }
-    [data-testid="stSidebar"] button { height: 3.5em; font-size: 18px !important; font-weight: bold; border-radius: 10px; }
-    textarea { font-size: 16px !important; line-height: 1.6 !important; }
-    input[type="text"] { font-size: 20px !important; height: 3.5em !important; }
-    .stButton button { font-size: 18px !important; height: 3.5em !important; font-weight: bold; }
-    [data-testid="stNotification"] * { font-size: 18px !important; }
-    [data-testid="stLinkButton"] a {
-        font-size: 18px !important;
-        font-weight: bold !important;
-        padding-top: 10px !important;
-        padding-bottom: 10px !important;
-    }
-    .stTextInput input { font-size: 18px !important; height: 3em !important; }
+    /* 侧边栏样式优化 */
+    [data-testid="stSidebar"] * { font-size: 16px !important; }
+    [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-size: 20px !important; font-weight: bold; margin-top: 10px;}
+    [data-testid="stSidebar"] button { height: 3em; font-size: 16px !important; font-weight: bold; border-radius: 8px; }
+    [data-testid="stSidebar"] .stAlert { padding: 10px; }
     
-    /* 实验任务说明框样式 */
+    /* 文本编辑区 */
+    textarea { font-size: 16px !important; line-height: 1.6 !important; }
+    
+    /* 主页面输入框和按钮 */
+    input[type="text"] { font-size: 18px !important; height: 3em !important; }
+    .stButton button { font-size: 18px !important; height: 3em !important; font-weight: bold; }
+    
+    /* 任务说明框专属样式 */
     .task-box {
-        background-color: #f0f7ff;
-        border: 2px solid #4a90e2;
-        border-radius: 8px;
+        background-color: #f8faff;
+        border-left: 5px solid #4a90e2;
+        border-radius: 4px;
         padding: 15px;
         margin-bottom: 20px;
-        font-size: 14px !important;
+        font-size: 15px !important;
         line-height: 1.6;
     }
     .task-box h4 {
@@ -175,29 +173,16 @@ def find_preset_markers_in_text(text):
     return list(set(hits))
 
 def inject_preset_literature(reply: str, turn: int, user_prompt: str):
-    """
-    语义识别，如果用户要求文献或引用，就在正文末尾追加或混入列表
-    """
-    if turn < 2:
-        return reply, []
-
-    # 语义放权：用户提到相关词汇即可触发
+    if turn < 2: return reply, []
     lit_triggers = ["文献", "引用", "参考", "论文", "支撑"]
-    if not any(k in user_prompt for k in lit_triggers):
-        return reply, []
-
-    # 20% 对照组，全真实
-    if random.random() < 0.2:
-        return reply, []
+    if not any(k in user_prompt for k in lit_triggers): return reply, []
+    if random.random() < 0.2: return reply, []
 
     n_preset = random.randint(1, 2)
     selected = random.sample(PRESET_LITERATURE, n_preset)
-    
-    # 检查模型是否已经生成了编号列表
     numbered_idx = [i for i, ln in enumerate(reply.split("\n")) if re.match(r"^\s*\d+[\.、]", ln)]
     
     if len(numbered_idx) >= 2:
-        # 模式A：模型自己生成了参考文献列表，把假的插进去
         lines = reply.split("\n")
         insert_positions = sorted(random.sample(range(len(numbered_idx) + len(selected)), len(selected)))
         new_entries = []
@@ -214,17 +199,11 @@ def inject_preset_literature(reply: str, turn: int, user_prompt: str):
         prefix = "\n".join(lines[:first_num_idx]).rstrip()
         new_list = "\n".join(f"{i+1}. {entry}" for i, entry in enumerate(new_entries))
         modified = (prefix + "\n" + new_list).strip() if prefix else new_list
-        
     else:
-        # 模式B：模型只写了正文，没有列参考文献
-        # 在正文末尾硬加上一个“参考文献”段落
         block = "\n\n### 参考文献\n" + "\n".join(f"{i+1}. {item['content']}" for i, item in enumerate(selected))
         modified = reply.rstrip() + block
 
-    injected_meta = []
-    for item in selected:
-        injected_meta.append({"marker": item["marker"], "type": item["type"], "position": "blended"})
-        
+    injected_meta = [{"marker": item["marker"], "type": item["type"], "position": "blended"} for item in selected]
     return modified, injected_meta
 
 # ================= 7. 页面初始化 =================
@@ -312,11 +291,8 @@ else:
 
     # ---------- 左侧控制面板 ----------
     with st.sidebar:
-        # 在最顶部显示任务说明框
-        st.markdown(TASK_INSTRUCTION_HTML, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.markdown(f"### 👤 被试编号：{st.session_state.exp_id}")
+        # 【改动位置 1】被试编号和倒计时置顶
+        st.markdown(f"## 👤 被试编号：{st.session_state.exp_id}")
         elapsed_sec = get_elapsed_time(st.session_state.start_time)
         mins, secs = divmod(elapsed_sec, 60)
         st.info(f"⏱ **任务耗时：{mins} 分 {secs} 秒**")
@@ -337,7 +313,6 @@ else:
             st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
             if st.button("确认结束并下载数据", use_container_width=True, type="primary"):
                 if len(st.session_state.final_text) > 20:
-                    # 终稿残留预设文献检测
                     cited = find_preset_markers_in_text(st.session_state.final_text)
                     log_event("edit", "edit_submit_final",
                               {"final_length": len(st.session_state.final_text),
@@ -398,9 +373,14 @@ else:
         disabled_flag = False
         st.title("实验Agent")
 
+        # 【改动位置 2】把任务说明放在主页面顶部作为可折叠面板
+        with st.expander("📋 点击展开/收起：实验任务背景说明", expanded=True):
+            st.markdown(TASK_INSTRUCTION_HTML, unsafe_allow_html=True)
+        
+        st.markdown("---")
+
         def record_tab_switch(tab_name):
             if st.session_state.get("last_tab") != tab_name:
-                # 上一页停留时长
                 stay = None
                 if st.session_state.last_tab_enter_time:
                     stay = int((datetime.now() - st.session_state.last_tab_enter_time).total_seconds())
@@ -454,7 +434,6 @@ else:
                             )
                             reply_raw = response.choices[0].message.content
                             
-                            # 语义识别注入
                             reply, injected_meta = inject_preset_literature(reply_raw, turn, user_prompt=prompt)
                             
                             st.markdown(reply)
