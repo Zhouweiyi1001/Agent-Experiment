@@ -852,6 +852,249 @@ def build_api_messages(messages, reference_context=""):
     result.extend(history)
     return result
 
+
+# ================= 6.5 日志中英文标签与两级行为编码 =================
+# 只保留交互过程相关行为；任务流程（开始/结束）与计时控制不纳入分析。
+EXCLUDED_ACTIONS = {"nav_task_start", "nav_task_end", "timer_pause", "timer_resume"}
+
+
+def classify_behavior(action, detail=None):
+    """按动作与事件明细，把日志归入“行为大类 + 行为细类”；返回 None 表示不纳入。"""
+    action = action or ""
+    detail = detail or {}
+    if action in EXCLUDED_ACTIONS:
+        return None
+
+    # ---------- AI 对话 ----------
+    if action == "chat_user_message":
+        text = str(detail.get("content") or "")
+        if detail.get("validity_inquiry") or detect_validity_inquiry(text)[0]:
+            return ("提示词输入", "Prompt input", "文献真实性追问", "validity inquiry")
+        if ("文献" in text or "论文" in text or "参考" in text) and any(
+            cue in text for cue in ["推荐", "补充", "几篇", "更多", "还有", "别的", "引用", "参考文献", "找"]
+        ):
+            return ("提示词输入", "Prompt input", "文献推荐请求", "reference request")
+        if any(cue in text for cue in ["写", "撰写", "综述", "润色", "修改", "结构", "大纲", "标题", "摘要", "论证", "逻辑", "改写", "翻译", "提纲", "框架"]):
+            return ("提示词输入", "Prompt input", "写作/结构请求", "writing/structure request")
+        if _has_narrow_focus(text):
+            return ("提示词输入", "Prompt input", "主题细化/限定", "sub-topic refinement")
+        return ("提示词输入", "Prompt input", "一般提问", "general question")
+    if action == "chat_agent_reply":
+        if detail.get("reference_count") or detail.get("has_mixed_references"):
+            return ("AI回复", "AI response", "含文献推荐的回复", "reply with references")
+        if detail.get("validity_inquiry"):
+            return ("AI回复", "AI response", "真实性回应", "validity response")
+        return ("AI回复", "AI response", "一般回答", "general reply")
+    if action == "chat_validity_interception":
+        return ("文献核对", "Literature verification", "真实性拦截(旧版)", "validity interception (legacy)")
+    if action == "chat_retry":
+        return ("提示词输入", "Prompt input", "重试请求", "retry request")
+
+    # ---------- AI 检索 ----------
+    if action == "search_input_query":
+        return ("AI检索", "AI search", "输入检索词", "query input")
+    if action == "search_modify_query":
+        return ("AI检索", "AI search", "修改检索词", "query modified")
+    if action == "search_submit":
+        return ("AI检索", "AI search", "提交检索", "query submitted")
+    if action == "search_view_results":
+        return ("AI检索", "AI search", "翻阅结果", "view more results")
+    if action == "search_click_external":
+        return ("AI检索", "AI search", "打开外部数据库", "open external DB")
+    if action == "search_confirm":
+        return ("文献核对", "Literature verification", "检索确认真伪", "confirm validity via search")
+    if action == "preset_search_hit":
+        return ("AI检索", "AI search", "检索命中模拟文献", "simulated reference searched")
+
+    # ---------- 文献推荐 / 引用 ----------
+    if action == "reference_mix_generated":
+        if detail.get("fake_count", 0) and detail.get("real_count", 0):
+            return ("文献推荐", "Reference recommendation", "真假混合文献", "mixed real/fake refs")
+        if detail.get("real_count", 0):
+            return ("文献推荐", "Reference recommendation", "纯真实文献", "real-only refs")
+        return ("文献推荐", "Reference recommendation", "文献生成", "refs generated")
+    if action == "preset_cited_in_final":
+        return ("文献引用", "Citation", "终稿引用模拟文献", "simulated reference cited")
+
+    # ---------- 文本编辑 / 复制 ----------
+    if action == "edit_text_change":
+        try:
+            delta = float(detail.get("delta_chars") or 0)
+        except (TypeError, ValueError):
+            delta = 0.0
+        if detail.get("copy_from_chat_approx"):
+            return ("文本修改", "Text editing", "粘贴AI内容", "paste AI content")
+        if delta > 20:
+            return ("文本修改", "Text editing", "新增/扩写", "add/expand")
+        if delta < -20:
+            return ("文本修改", "Text editing", "删减", "delete")
+        sim = detail.get("similarity_ratio")
+        if sim is not None:
+            try:
+                if float(sim) < 0.5:
+                    return ("文本修改", "Text editing", "大幅改写", "major rewrite")
+            except (TypeError, ValueError):
+                pass
+        return ("文本修改", "Text editing", "局部微调", "minor edit")
+    if action == "edit_copy_from_chat":
+        if detail.get("contains_reference"):
+            return ("复制AI内容", "Copy AI output", "复制文献清单", "copy reference list")
+        return ("复制AI内容", "Copy AI output", "复制正文", "copy body text")
+
+    # ---------- 终稿 ----------
+    if action == "edit_submit_final":
+        return ("提交终稿", "Final submission", "提交终稿", "submit final")
+    if action == "final_text_saved":
+        return ("提交终稿", "Final submission", "终稿保存", "final saved")
+
+    # ---------- 界面导航 / 其他 ----------
+    if action == "nav_tab_switch":
+        return ("界面导航", "UI navigation", "切换页面", "tab switch")
+    if action == "edit_enter_tab":
+        return ("界面导航", "UI navigation", "进入编辑区", "enter editor")
+    if action == "search_enter_tab":
+        return ("界面导航", "UI navigation", "进入查阅区", "enter search")
+    return ("其他", "Other", action or "未知", action or "unknown")
+
+# 原始列名 -> 中英文对照列名
+COLUMN_LABELS = {
+    "event_id": "事件ID(event_id)",
+    "session_id": "会话ID(session_id)",
+    "participant_id": "被试编号(participant_id)",
+    "event_time": "时间(event_time)",
+    "elapsed_seconds": "累计秒数(elapsed_seconds)",
+    "event_category": "类别(event_category)",
+    "event_action": "动作(event_action)",
+    "page": "页面(page)",
+    "turn": "轮次(turn)",
+    "related_marker": "关联标记(related_marker)",
+    "detection_method": "判定方式(detection_method)",
+    "note": "备注(note)",
+    "from": "来源页面(from)",
+    "to": "目标页面(to)",
+    "prev_stay_seconds": "上次停留秒数(prev_stay_seconds)",
+    "content": "内容(content)",
+    "is_questioning": "是否追问(is_questioning)",
+    "validity_inquiry": "是否真实性追问(validity_inquiry)",
+    "validity_cues": "真实性线索(validity_cues)",
+    "length": "长度(length)",
+    "has_preset": "含模拟文献(has_preset)",
+    "injected_meta": "注入信息(injected_meta)",
+    "query": "检索词(query)",
+    "match_cues": "命中线索(match_cues)",
+    "reply": "回复(reply)",
+    "intercepted_before_model": "是否拦截(intercepted_before_model)",
+    "char_count": "字数(char_count)",
+    "delta_chars": "字数变化(delta_chars)",
+    "similarity_ratio": "相似度(similarity_ratio)",
+    "preset_markers_in_text": "文本模拟标记(preset_markers_in_text)",
+    "copy_from_chat_approx": "近似复制(copy_from_chat_approx)",
+    "contains_reference": "含参考文献(contains_reference)",
+    "copy_length": "复制字数(copy_length)",
+    "total_count": "文献总数(total_count)",
+    "real_count": "真实文献数(real_count)",
+    "fake_count": "模拟文献数(fake_count)",
+    "references": "文献清单(references)",
+    "openalex_search_warning": "OpenAlex告警(openalex_search_warning)",
+    "has_mixed_references": "含混合文献(has_mixed_references)",
+    "reference_count": "文献数(reference_count)",
+    "final_length": "终稿字数(final_length)",
+    "preset_cited_markers": "终稿模拟标记(preset_cited_markers)",
+    "marker": "标记(marker)",
+    "preset_hits": "命中模拟标记(preset_hits)",
+    "detail_turn": "明细轮次(detail_turn)",
+    "detail_scope": "明细范围(detail_scope)",
+}
+
+
+def build_readable_log_df(logs):
+    """把原始日志转成中英文对照、带两级行为编码的表格；流程/计时事件不纳入。"""
+    if not logs:
+        return pd.DataFrame()
+    rows = []
+    for evt in logs:
+        action = evt.get("event_action", "")
+        try:
+            detail = json.loads(evt.get("event_detail") or "{}")
+        except Exception:
+            detail = {}
+        cls = classify_behavior(action, detail)
+        if cls is None:
+            continue
+        row = dict(evt)
+        row["_detail"] = detail
+        row["_l1"] = f"{cls[0]}/{cls[1]}"
+        row["_l2"] = f"{cls[2]}/{cls[3]}"
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    details_df = pd.json_normalize(df["_detail"])
+    base_cols = set(df.columns) - {"event_detail", "_detail", "_l1", "_l2"}
+    details_df = details_df.rename(
+        columns={c: f"detail_{c}" for c in details_df.columns if c in base_cols}
+    )
+    df = pd.concat([df.drop(columns=["event_detail", "_detail", "_l1", "_l2"]), details_df], axis=1)
+    df = df.loc[:, ~df.columns.duplicated()]
+    df.insert(0, "行为大类(behavior_l1)", [r["_l1"] for r in rows])
+    df.insert(1, "行为细类(behavior_l2)", [r["_l2"] for r in rows])
+    df = df.rename(columns=COLUMN_LABELS)
+    return df
+
+
+def build_behavior_summary(logs):
+    """按被试 × 行为大类 × 行为细类汇总次数与首次/末次时间；流程/计时事件不纳入。"""
+    rows = []
+    for evt in (logs or []):
+        try:
+            detail = json.loads(evt.get("event_detail") or "{}")
+        except Exception:
+            detail = {}
+        cls = classify_behavior(evt.get("event_action", ""), detail)
+        if cls is None:
+            continue
+        rows.append({
+            "被试编号(participant_id)": evt.get("participant_id"),
+            "行为大类(behavior_l1)": f"{cls[0]}/{cls[1]}",
+            "行为细类(behavior_l2)": f"{cls[2]}/{cls[3]}",
+            "时间(event_time)": evt.get("event_time"),
+        })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    summary = (
+        df.groupby(["被试编号(participant_id)", "行为大类(behavior_l1)", "行为细类(behavior_l2)"])
+        .agg(
+            次数_count=("时间(event_time)", "count"),
+            首次_first=("时间(event_time)", "min"),
+            末次_last=("时间(event_time)", "max"),
+        )
+        .reset_index()
+    )
+    return summary
+
+
+def detect_copy_from_replies(new_text, old_text, replies, min_len=40):
+    """检测新文本中是否出现了旧文本中没有、但来自最近 AI 回复的长片段（近似复制）。"""
+    if not replies:
+        return False
+    new_text = new_text or ""
+    old_text = old_text or ""
+    for reply in replies:
+        reply = (reply or "").strip()
+        if len(reply) < min_len:
+            continue
+        step = max(10, min_len // 2)
+        for i in range(0, max(1, len(reply) - min_len + 1), step):
+            chunk = reply[i:i + min_len].strip()
+            if len(chunk) < min_len:
+                continue
+            if chunk in new_text and chunk not in old_text:
+                return True
+    return False
+
+
 # ================= 7. 页面初始化 =================
 if "exp_id" not in st.session_state: st.session_state.exp_id = ""
 if "messages" not in st.session_state: st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -869,6 +1112,7 @@ if "last_tab_enter_time" not in st.session_state: st.session_state.last_tab_ente
 if "search_prev_query" not in st.session_state: st.session_state.search_prev_query = ""
 if "editor_prev_text" not in st.session_state: st.session_state.editor_prev_text = ""
 if "last_agent_reply" not in st.session_state: st.session_state.last_agent_reply = ""
+if "recent_ai_replies" not in st.session_state: st.session_state.recent_ai_replies = []
 if "is_generating" not in st.session_state: st.session_state.is_generating = False
 if "pending_error" not in st.session_state: st.session_state.pending_error = False
 if "used_reference_markers" not in st.session_state: st.session_state.used_reference_markers = []
@@ -923,6 +1167,9 @@ if not st.session_state.is_logged_in:
                     st.session_state.last_agent_reply = next(
                         (m.get("content", "") for m in reversed(st.session_state.messages) if m.get("role") == "assistant"), ""
                     )
+                    st.session_state.recent_ai_replies = [
+                        m.get("content", "") for m in st.session_state.messages if m.get("role") == "assistant"
+                    ][-3:]
                     st.session_state.search_prev_query = ""
                     st.session_state.search_active_query = ""
                     st.success(f"成功恢复编号 {safe_login_id} 的进度！")
@@ -938,6 +1185,7 @@ if not st.session_state.is_logged_in:
                 st.session_state.temp_editor = ""
                 st.session_state.final_text = ""
                 st.session_state.last_agent_reply = ""
+                st.session_state.recent_ai_replies = []
                 st.session_state.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 st.session_state.timer_accumulated = 0.0
                 st.session_state.timer_paused = False
@@ -1063,20 +1311,26 @@ else:
         st.title("实验已结束")
         st.success("✅ 实验已正式结束并保存！请下载实验数据并完成后测问卷。")
 
-        df = pd.DataFrame(st.session_state.logs)
-        if 'event_detail' in df.columns:
-            details_df = df['event_detail'].apply(lambda x: json.loads(x) if isinstance(x, str) else {})
-            details_df = pd.json_normalize(details_df)
-            df = pd.concat([df.drop(columns=['event_detail']), details_df], axis=1)
-            
-        csv = df.to_csv(index=False, encoding="utf-8-sig")
+        readable_df = build_readable_log_df(st.session_state.logs)
+        csv = readable_df.to_csv(index=False, encoding="utf-8-sig")
         st.download_button(
-            label="📥 下载实验数据(CSV)",
+            label="📥 下载实验日志(中英文对照 CSV)",
             data=csv,
             file_name=f"log_{st.session_state.exp_id}.csv",
             mime="text/csv",
             use_container_width=True
         )
+
+        summary_df = build_behavior_summary(st.session_state.logs)
+        if not summary_df.empty:
+            summary_csv = summary_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📊 下载行为统计汇总(CSV)",
+                data=summary_csv,
+                file_name=f"behavior_summary_{st.session_state.exp_id}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
         st.markdown("---")
         st.markdown("### 🎉 请完成实验后测问卷")
@@ -1218,6 +1472,9 @@ else:
 
                                 st.session_state.messages.append({"role": "assistant", "content": reply})
                                 st.session_state.last_agent_reply = reply
+                                st.session_state.recent_ai_replies = (
+                                    st.session_state.recent_ai_replies + [reply]
+                                )[-3:]
                                 st.session_state.is_generating = False
                                 st.session_state.pending_error = False
                                 if references:
@@ -1266,11 +1523,9 @@ else:
                 except Exception:
                     ratio, edit_dist = None, None
 
-                copy_approx = False
-                if st.session_state.last_agent_reply and len(new_text) > len(old_text) + 50:
-                    seg = new_text[-min(len(new_text), 200):]
-                    if SequenceMatcher(None, seg, st.session_state.last_agent_reply[-200:]).ratio() > 0.6:
-                        copy_approx = True
+                copy_approx = detect_copy_from_replies(
+                    new_text, old_text, st.session_state.get("recent_ai_replies", [])
+                )
 
                 cited = find_preset_markers_in_text(new_text)
                 log_event("edit", "edit_text_change",
@@ -1279,8 +1534,14 @@ else:
                            "preset_markers_in_text": cited, "copy_from_chat_approx": copy_approx},
                           page="本地文档编辑区", detection_method="diff")
                 if copy_approx:
+                    added_reference = (
+                        ("参考文献" in new_text or "References" in new_text)
+                        and not ("参考文献" in old_text or "References" in old_text)
+                    )
                     log_event("edit", "edit_copy_from_chat",
-                              {"note": "文本突增且与最近智能体回复高度相似，近似判定为复制"},
+                              {"note": "新文本中出现此前没有、且与最近智能体回复一致的长片段，近似判定为复制",
+                               "copy_length": len(new_text) - len(old_text),
+                               "contains_reference": added_reference},
                               page="本地文档编辑区", detection_method="approx")
 
                 st.session_state.editor_text = new_text
