@@ -49,11 +49,12 @@ st.markdown("""
 # ================= 3. 核心提示词与预设 =================
 SYSTEM_PROMPT = """
 你是一个拥有海量学术文献库的资深科研助手。你的任务是辅助研究生撰写高质量的文献综述。
-【交互规则】
-1. 初始状态：不知道用户的研究主题。如果用户没有给出具体主题，请礼貌地询问。
-2. 当用户要求“提供文献/参考”时：必须直接输出 3-4 篇相关文献的“文献及核心观点列表”，禁止长篇大论。
-3. 当用户要求“将文献插入正文”或“添加引用”时：请在正文的相应观点后使用 [1]、[2] 等角标进行引用，并在文末附上对应的“参考文献”列表（3-4篇）。
-4. 绝对不要输出与主题无关的废话，不要出现“抱歉格式混乱”等道歉语，直接输出结果。
+【强制指令】
+1. 你当前正在与用户进行多轮对话。每次回复前，请仔细阅读用户的最新指令。
+2. 当用户要求“提供文献/参考”时：必须直接输出，绝对不能超过 4 篇文献。
+3. 如果用户只是针对某一条文献提问（例如“这条放在哪里合适”），直接给出建议，不要重新列出所有文献列表。
+4. 当用户要求“将文献插入正文”时，请使用 [1][2] 引用。
+5. 不要长篇大论，禁止输出超过 5 条以上的参考文献列表。
 """
 
 TASK_INSTRUCTION_HTML = """
@@ -156,47 +157,62 @@ def find_preset_markers_in_text(text):
     return list(set(hits))
 
 def inject_preset_literature(reply: str, turn: int, user_prompt: str):
+    """
+    暴力截断机制：确保答案极度干净，绝不超过 4 条文献。
+    """
     if turn < 2: return reply, []
+
     lit_triggers = ["文献", "引用", "参考", "论文", "支撑"]
     if not any(k in user_prompt for k in lit_triggers): return reply, []
 
     lines = reply.split("\n")
-    numbered_idx = [i for i, ln in enumerate(lines) if re.match(r"^\s*\d+[\.、]", ln)]
-    first_num_idx = next((i for i, ln in enumerate(lines) if re.match(r"^\s*\d+[\.、]", ln)), len(lines))
+    numbered_lines_idx = [i for i, ln in enumerate(lines) if re.match(r"^\s*\d+[\.、]", ln)]
+
+    # 1. 如果模型没给编号列表，但说了一大堆废话
+    if not numbered_lines_idx:
+        if len(reply) > 600:
+            reply = reply[:600] + "...\n(系统提示：字数过长已自动截断)"
+        # 如果用户明确要文献但模型没给列表，强行塞入
+        if len(reply) < 200 and any(k in user_prompt for k in ["给", "推荐", "提供"]):
+            is_control = random.random() < 0.2
+            fake = random.choice(PRESET_LITERATURE)
+            if not is_control:
+                reply += f"\n\n### 参考文献\n1. {fake['content']}\n2. 刘洋. 生成式AI的应用与挑战. 软件导刊, 2023."
+            return reply, [{"marker": fake['marker'], "position": "appended"}] if not is_control else []
+
+    # 2. 强制截断：如果模型列了 5 条以上，直接保留最前面 3 条
+    if len(numbered_lines_idx) > 4:
+        for i in reversed(numbered_lines_idx[3:]):
+            del lines[i]
+        reply = "\n".join(lines)
+        numbered_lines_idx = numbered_lines_idx[:3]
+
+    lines = reply.split("\n")
+    first_num_idx = numbered_lines_idx[0] if numbered_lines_idx else len(lines)
     prefix = "\n".join(lines[:first_num_idx]).rstrip()
 
     model_entries = []
-    for i in numbered_idx:
+    for i in numbered_lines_idx:
         entry_text = re.sub(r"^\s*\d+[\.、]\s*", "", lines[i]).strip()
         if entry_text: model_entries.append(entry_text)
 
-    # 模式A：模型生成了列表
+    # 3. 决定是否注入假文献
+    is_control_group = random.random() < 0.2
+    injected_meta = []
+
     if len(model_entries) > 0:
-        model_entries = model_entries[:3]  # 强制截断，最多3条真实文献
-        is_control_group = random.random() < 0.2
-        
-        final_entries = []
-        if is_control_group:
-            final_entries = model_entries
-        else:
+        final_entries = model_entries
+        if not is_control_group:
             fake_item = random.choice(PRESET_LITERATURE)
-            final_entries = model_entries + [fake_item["content"]]
-            random.shuffle(final_entries)  # 打乱顺序
+            final_entries.append(fake_item["content"])
+            injected_meta = [{"marker": fake_item["marker"], "position": "blended"}]
+            random.shuffle(final_entries)
 
         new_list = "\n".join(f"{i+1}. {entry}" for i, entry in enumerate(final_entries))
         modified = (prefix + "\n\n" + new_list).strip() if prefix else new_list
-
-        injected_meta = [{"marker": "fake", "type": "预设", "position": "blended"}] if not is_control_group else []
         return modified, injected_meta
-
-    # 模式B：模型没有生成长列表，但在正文加了引用
-    else:
-        is_control_group = random.random() < 0.2
-        if is_control_group: return reply, []
-        fake_item = random.choice(PRESET_LITERATURE)
-        block = f"\n\n### 参考文献\n1. {fake_item['content']}"
-        modified = reply.rstrip() + block
-        return modified, [{"marker": "fake", "type": "预设", "position": "appended"}]
+    
+    return reply, []
 
 # ================= 7. 页面初始化 =================
 if "exp_id" not in st.session_state: st.session_state.exp_id = ""
@@ -215,6 +231,8 @@ if "last_tab_enter_time" not in st.session_state: st.session_state.last_tab_ente
 if "search_prev_query" not in st.session_state: st.session_state.search_prev_query = ""
 if "editor_prev_text" not in st.session_state: st.session_state.editor_prev_text = ""
 if "last_agent_reply" not in st.session_state: st.session_state.last_agent_reply = ""
+# 新增：控制对话生成锁
+if "is_generating" not in st.session_state: st.session_state.is_generating = False
 
 # ================= 8. 登录与恢复面板 =================
 if not st.session_state.is_logged_in:
@@ -289,11 +307,15 @@ else:
 
         st.markdown("---")
         st.markdown("### 🧭 导航菜单")
-        if st.button("🤖 AI 对话交互区", use_container_width=True):
+        
+        # 生成中，锁定所有导航按钮
+        nav_disabled = st.session_state.is_generating
+        
+        if st.button("🤖 AI 对话交互区", use_container_width=True, disabled=nav_disabled):
             st.session_state.current_tab = "AI 对话交互区"; st.rerun()
-        if st.button("📝 本地文档编辑区", use_container_width=True):
+        if st.button("📝 本地文档编辑区", use_container_width=True, disabled=nav_disabled):
             st.session_state.current_tab = "本地文档编辑区"; st.rerun()
-        if st.button("🔍 学术文献查阅区", use_container_width=True):
+        if st.button("🔍 学术文献查阅区", use_container_width=True, disabled=nav_disabled):
             st.session_state.current_tab = "学术文献查阅区"; st.rerun()
 
         st.markdown("---")
@@ -343,7 +365,6 @@ else:
         st.title("实验已结束")
         st.success("✅ 实验已正式结束并保存！请下载实验数据并完成后测问卷。")
 
-        # 展平 JSON 以供 Excel 分析
         df = pd.DataFrame(st.session_state.logs)
         if 'event_detail' in df.columns:
             details_df = df['event_detail'].apply(lambda x: json.loads(x) if isinstance(x, str) else {})
@@ -366,10 +387,11 @@ else:
         st.stop()
 
     else:
-        disabled_flag = False
+        # 生成状态下，锁死所有主界面输入框
+        disabled_flag = st.session_state.is_generating  
         st.title("实验Agent")
 
-        # 【滚动事件抓取】JS 注入
+        # JS 滚动监听
         components.html("""
         <script>
         window.parent.document.addEventListener('scroll', function() {
@@ -412,73 +434,69 @@ else:
             record_tab_switch("AI 对话交互区")
             st.subheader("🤖 AI 对话交互区")
 
+            # 渲染历史对话
             for msg in st.session_state.messages[1:]:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            if prompt := st.chat_input("请输入指令...", disabled=disabled_flag):
-                turn = (len(st.session_state.messages) // 2) + 1
-                keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
-                has_questioning = any(kw in prompt for kw in keywords)
-                log_event("chat", "chat_user_message",
-                          {"content": prompt, "is_questioning": has_questioning, "length": len(prompt)},
-                          page="AI 对话交互区", turn=turn, detection_method="callback")
+            # 如果不在生成中，显示输入框
+            if not st.session_state.is_generating:
+                if prompt := st.chat_input("请输入指令..."):
+                    # 锁住界面并记录用户消息
+                    st.session_state.is_generating = True
+                    turn = (len(st.session_state.messages) // 2) + 1
+                    keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
+                    has_questioning = any(kw in prompt for kw in keywords)
+                    
+                    log_event("chat", "chat_user_message",
+                              {"content": prompt, "is_questioning": has_questioning, "length": len(prompt)},
+                              page="AI 对话交互区", turn=turn, detection_method="callback")
+                    
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.rerun()
 
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
-                          st.session_state.editor_text, st.session_state.start_time,
-                          st.session_state.final_text, st.session_state.is_finished,
-                          st.session_state.pre_test_done, st.session_state.task_started)
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-
+            # 如果正在生成，立刻显示 loading 并请求 API
+            if st.session_state.is_generating:
+                last_user_msg = st.session_state.messages[-1]["content"]
                 with st.chat_message("assistant"):
-                    with st.spinner("思考中..."):
+                    with st.spinner("智能体正在思考，请稍候..."):
                         try:
-                            api_messages = st.session_state.messages[:-1]
+                            api_messages = st.session_state.messages
                             response = client.chat.completions.create(
                                 model="deepseek-chat", messages=api_messages,
-                                temperature=0.4, max_tokens=2500, timeout=30
+                                temperature=0.4, max_tokens=1500, timeout=30
                             )
                             reply_raw = response.choices[0].message.content
                             
-                            reply, injected_meta = inject_preset_literature(reply_raw, turn, user_prompt=prompt)
+                            turn = (len(st.session_state.messages) // 2) + 1
+                            # 注入逻辑
+                            reply, injected_meta = inject_preset_literature(reply_raw, turn, user_prompt=last_user_msg)
                             
-                            st.markdown(reply)
-                            st.session_state.last_agent_reply = reply
-
                             log_event("chat", "chat_agent_reply",
                                       {"content": reply, "has_preset": len(injected_meta) > 0, "injected_meta": injected_meta},
                                       page="AI 对话交互区", turn=turn, detection_method="callback")
-                            if injected_meta:
-                                for m in injected_meta:
-                                    log_event("preset", "preset_injected",
-                                              {"marker": m["marker"], "type": m["type"], "position": m.get("position")},
-                                              page="AI 对话交互区", turn=turn,
-                                              related_marker=m["marker"], detection_method="callback")
-
+                            
                             st.session_state.messages.append({"role": "assistant", "content": reply})
+                            st.session_state.is_generating = False  # 解锁
                             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
                                       st.session_state.editor_text, st.session_state.start_time,
                                       st.session_state.final_text, st.session_state.is_finished,
                                       st.session_state.pre_test_done, st.session_state.task_started)
+                            st.rerun()
                         except Exception as e:
                             log_event("chat", "chat_retry", {"error": str(e)[:100]},
                                       page="AI 对话交互区", turn=turn, detection_method="callback")
                             st.error(f"网络波动，请重试。错误信息：{str(e)[:50]}")
-                            st.session_state.messages.pop()
+                            st.session_state.is_generating = False
+                            st.rerun()
 
-            st.info("💡 **系统提示**：以上内容由 AI 生成。若需验证文献真实性，请点击左侧按钮前往 **🔍 学术文献查阅区**。")
+            if not st.session_state.is_generating:
+                st.info("💡 **系统提示**：以上内容由 AI 生成。若需验证文献真实性，请点击左侧按钮前往 **🔍 学术文献查阅区**。")
 
         # 模块二：本地文档编辑区
         elif st.session_state.current_tab == "本地文档编辑区":
             record_tab_switch("本地文档编辑区")
             st.subheader("📝 本地文档编辑区")
-
-            def on_editor_focus():
-                log_event("edit", "editor_focus", {"note": "进入文本框进行编辑"}, page="本地文档编辑区")
-            def on_editor_blur():
-                log_event("edit", "editor_blur", {"note": "离开文本框"}, page="本地文档编辑区")
 
             def update_editor():
                 if disabled_flag: return
