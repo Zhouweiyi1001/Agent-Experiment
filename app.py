@@ -54,7 +54,9 @@ SYSTEM_PROMPT = """
 4. 用户追问某篇文献是否真实、是否可检索时，应结合当前对话中已有的信息作出具体回应；如果当前没有数据库检索证据，不要声称已经核验，也不要武断断言。说明可通过题名、作者、期刊、年份或 DOI 进一步交叉检索。
 5. 如果用户只针对某一条文献提问、要求修改格式、翻译或润色，不要无故重新列出全部参考文献。
 6. 默认提供约 4 篇参考文献；用户明确提出数量时，按本轮可用清单合理调整。
-7. 使用清晰、自然、严谨的中文学术表达，避免空泛套话。"""
+7. 当用户继续索要文献（如“还有别的文献吗”“再推荐几篇”“补充一些文献”）时，应把本轮提供的参考文献清单当作新一批文献直接介绍给用户（例如“以下再补充几篇相关研究”），从清单中选取条目并结合用户主题说明其相关性；不要回答“没有更多文献”“只能引用这几条”，也不要用写作方法建议替代文献推荐。
+8. 如果用户限定了较窄的群体、情境或子问题（例如某一类院校/学生群体），而清单中缺少直接针对该细分方向的文献：不要假装清单文献就是针对该细分方向的，也不要编造；应说明现有条目属于上位/邻近研究，并指出可放宽或组合的检索方向。
+9. 使用清晰、自然、严谨的中文学术表达，避免空泛套话。"""
 TASK_INSTRUCTION_HTML = """
 <div class="task-box">
     <h4>📋 实验任务背景说明</h4>
@@ -114,6 +116,42 @@ REAL_LITERATURE_FALLBACK = [
         "title": "AI-generated content tools and students’ critical thinking: Insights from a Chinese university",
         "content": "Zou, X., Su, P., Li, L., & Fu, P. (2024). AI-generated content tools and students’ critical thinking: Insights from a Chinese university. IFLA Journal, 50(2), 228–241. https://doi.org/10.1177/03400352231214963",
         "match_keys": ["AI-generated content tools and students’ critical thinking", "10.1177/03400352231214963"]
+    },
+    {
+        "marker": "REAL_BAIDOO_ANU_2023",
+        "title": "Education in the era of generative artificial intelligence (AI): Understanding the potential benefits of ChatGPT in promoting teaching and learning",
+        "content": "Baidoo-Anu, D., & Ansah, L. O. (2023). Education in the era of generative artificial intelligence (AI): Understanding the potential benefits of ChatGPT in promoting teaching and learning. Journal of AI, 7(1), 52–62. https://doi.org/10.61969/jai.1337500",
+        "match_keys": ["Education in the era of generative artificial intelligence", "10.61969/jai.1337500"]
+    },
+    {
+        "marker": "REAL_FARROKHNIA_2024",
+        "title": "A SWOT analysis of ChatGPT: Implications for educational practice and research",
+        "content": "Farrokhnia, M., Banihashem, S. K., Noroozi, O., & Wals, A. E. J. (2024). A SWOT analysis of ChatGPT: Implications for educational practice and research. Innovations in Education and Teaching International, 61(3), 460–474. https://doi.org/10.1080/14703297.2023.2195846",
+        "match_keys": ["A SWOT analysis of ChatGPT", "10.1080/14703297.2023.2195846"]
+    },
+    {
+        "marker": "REAL_RAHMAN_2023",
+        "title": "ChatGPT for education and research: Opportunities, threats, and strategies",
+        "content": "Rahman, M. M., & Watanobe, Y. (2023). ChatGPT for education and research: Opportunities, threats, and strategies. Applied Sciences, 13(9), 5783. https://doi.org/10.3390/app13095783",
+        "match_keys": ["ChatGPT for education and research", "10.3390/app13095783"]
+    },
+    {
+        "marker": "REAL_DWIVEDI_2023",
+        "title": "So what if ChatGPT wrote it? Multidisciplinary perspectives on opportunities, challenges and implications of generative conversational AI for research, practice and policy",
+        "content": "Dwivedi, Y. K., Kshetri, N., Hughes, L., et al. (2023). So what if ChatGPT wrote it? Multidisciplinary perspectives on opportunities, challenges and implications of generative conversational AI for research, practice and policy. International Journal of Information Management, 71, 102642. https://doi.org/10.1016/j.ijinfomgt.2023.102642",
+        "match_keys": ["So what if ChatGPT wrote it?", "10.1016/j.ijinfomgt.2023.102642"]
+    },
+    {
+        "marker": "REAL_ZAWACKI_2019",
+        "title": "Systematic review of research on artificial intelligence applications in higher education – where are the educators?",
+        "content": "Zawacki-Richter, O., Marín, V. I., Bond, M., & Gouverneur, F. (2019). Systematic review of research on artificial intelligence applications in higher education – where are the educators? International Journal of Educational Technology in Higher Education, 16, 39. https://doi.org/10.1186/s41239-019-0171-0",
+        "match_keys": ["Systematic review of research on artificial intelligence applications in higher education", "10.1186/s41239-019-0171-0"]
+    },
+    {
+        "marker": "REAL_LUND_2023",
+        "title": "Chatting about ChatGPT: How may AI and GPT impact academia and libraries?",
+        "content": "Lund, B. D., & Wang, T. (2023). Chatting about ChatGPT: How may AI and GPT impact academia and libraries? Library Hi Tech News, 40(3), 26–29. https://doi.org/10.1108/LHTN-01-2023-0009",
+        "match_keys": ["Chatting about ChatGPT", "10.1108/LHTN-01-2023-0009"]
     }
 ]
 # 以下条目为实验中用于形成“真实文献与模拟文献混合输出”的模拟文献。
@@ -359,6 +397,11 @@ def is_reference_generation_request(text):
         return False
     t = str(text)
     low = t.lower()
+    # 简短指代型追问（如“还有吗”“还有别的吗”“再来点”）：结合实验语境按索要文献处理。
+    short_text = t.strip().strip("?？!！。. ")
+    if re.fullmatch(r"(还有|还有别的|还有没有|别的|更多|再来点|再给点|再多点|more|any more)[吗呢么]?",
+                    short_text, flags=re.IGNORECASE):
+        return True
     validity_hit, _ = detect_validity_inquiry(t)
     specific_reference_cues = [
         "这篇文献", "这条文献", "该文献", "上述文献", "上面这篇", "这一篇论文", "这篇论文",
@@ -504,6 +547,16 @@ def _is_ai_education_topic(text):
         "academic", "education", "graduate", "higher education"
     ]
     return any(word in low for word in ai_terms) and any(word in low for word in education_terms)
+NARROW_FOCUS_CUES = [
+    "双非", "民办", "二本", "三本", "一本", "985", "211", "地方高校", "地方院校",
+    "高职", "专科", "职教", "某类", "某一", "特定群体", "这一群体", "该群体",
+    "子群体", "细分", "子方向", "具体到", "聚焦于", "聚焦", "案例", "某校",
+    "某地区", "某省", "某专业", "农村", "留守", "少数民族", "女性", "西部", "欠发达"
+]
+def _has_narrow_focus(text):
+    """判断用户是否限定了较窄的群体/情境（用于覆盖不足时的如实说明）。"""
+    value = str(text or "")
+    return any(cue in value for cue in NARROW_FOCUS_CUES)
 def _clean_search_query(query):
     """从用户请求中提取检索关键词；若几乎没有有效词，则回退到实验主题检索。"""
     cleaned = re.sub(
@@ -518,29 +571,45 @@ def _clean_search_query(query):
         cleaned = DEFAULT_TOPIC_QUERY
     return cleaned
 def get_real_reference_candidates(query):
-    """先取 OpenAlex 检索结果（多页），再补充本地已核对 DOI 的真实文献，保证持续索要时仍有真实来源。"""
+    """先取 OpenAlex 检索结果（多页），再补充本地真实文献；并为条目标注是否直接匹配用户细分方向。"""
     candidates = []
     search_query = _clean_search_query(query)
-    # 多页检索扩大候选池，便于多轮持续提供新的真实文献。
+    is_specific = search_query != DEFAULT_TOPIC_QUERY
+    # 针对用户本轮的具体检索词（多页）。
+    specific_count = 0
     for page in (1, 2):
         data, error = fetch_openalex(search_query, page=page, per_page=12)
         for work in data.get("results", []):
             item = _format_openalex_work(work)
             if item:
+                item["scope"] = "specific" if is_specific else "broad"
                 candidates.append(item)
+                if is_specific:
+                    specific_count += 1
         if not data.get("results"):
             break
-    # 本地真实文献备用库始终并入，离线或检索失败时仍可继续提供真实来源。
+    # 细分方向命中过少时，补充实验主题的上位检索，保证仍有足够候选。
+    if is_specific and specific_count < 6:
+        for page in (1, 2):
+            data, error = fetch_openalex(DEFAULT_TOPIC_QUERY, page=page, per_page=12)
+            for work in data.get("results", []):
+                item = _format_openalex_work(work)
+                if item:
+                    item["scope"] = "broad"
+                    candidates.append(item)
+            if not data.get("results"):
+                break
+    # 本地真实文献备用库始终并入（上位/邻近文献）。
     candidates.extend([
         {
-            "marker": item["marker"], "kind": "real",
+            "marker": item["marker"], "kind": "real", "scope": "broad",
             "title": item["title"], "content": item["content"],
             "doi": next((key for key in item.get("match_keys", []) if "doi.org" in key), ""),
             "match_keys": item.get("match_keys", [])
         }
         for item in REAL_LITERATURE_FALLBACK
     ])
-    # DOI 优先去重；没有 DOI 时按题名去重。
+    # DOI 优先去重；没有 DOI 时按题名去重（先出现的 specific 条目优先保留）。
     unique = []
     seen = set()
     for item in candidates:
@@ -609,14 +678,31 @@ def reconstruct_used_markers(logs):
             if marker and marker not in used:
                 used.append(marker)
     return used
-def build_reference_context(references):
+def build_reference_context(references, narrow_focus=False):
     if not references:
         return ""
     lines = [
         "【本轮可用参考文献清单】",
         "以下条目供本轮回答使用。正文如需引用，请使用对应的 [1]、[2] 等编号；",
-        "不要自行生成文末参考文献表，应用程序会在回答后自动追加。不要改写作者、题名、来源、年份或链接，也不要补造清单之外的书目信息。"
+        "不要自行生成文末参考文献表，应用程序会在回答后自动追加。不要改写作者、题名、来源、年份或链接，也不要补造清单之外的书目信息。",
+        "重要：本轮清单是应用程序针对用户本轮请求新提供的文献。如果用户本轮在“再推荐几篇 / 还有别的文献吗 / 补充一些文献”等继续索要文献，请把清单条目作为新一批文献直接介绍给用户，不要回答“没有更多文献”或“只能引用旧清单”，也不要用写作建议替代文献推荐。"
     ]
+    if narrow_focus:
+        broad_numbers = [item["number"] for item in references if item.get("scope") != "specific"]
+        specific_numbers = [item["number"] for item in references if item.get("scope") == "specific"]
+        if broad_numbers and specific_numbers:
+            lines.append(
+                "注意：用户限定了较窄的群体/情境。清单中 "
+                f"{broad_numbers} 为上位/邻近文献，不一定专门针对该细分方向；"
+                f"{specific_numbers} 为直接匹配条目。请如实说明各自的适用范围，"
+                "不要把上位文献说成是针对该细分方向的专门研究。"
+            )
+        elif broad_numbers:
+            lines.append(
+                "注意：用户限定的群体/情境较窄，本轮未检索到直接针对该细分方向的文献，"
+                "清单条目均为上位/邻近研究。请说明这一覆盖缺口，并给出可放宽或组合的检索方向；"
+                "不要把上位文献说成是针对该细分方向的专门研究，也不要编造针对性文献。"
+            )
     lines.extend(f"[{item['number']}] {item['content']}" for item in references)
     lines.append("请围绕用户问题自然组织回答，不要在回答中解释清单的内部生成或筛选过程。")
     return "\n".join(lines)
@@ -948,7 +1034,9 @@ else:
                                     last_user_msg, st.session_state.exp_id, turn,
                                     used_markers=st.session_state.used_reference_markers
                                 )
-                                reference_context = build_reference_context(references)
+                                reference_context = build_reference_context(
+                                    references, narrow_focus=_has_narrow_focus(last_user_msg)
+                                )
                                 api_messages = build_api_messages(st.session_state.messages, reference_context)
                                 response = client.chat.completions.create(
                                     model="deepseek-chat",
@@ -979,6 +1067,7 @@ else:
                                                     "number": item["number"],
                                                     "marker": item["marker"],
                                                     "kind": item["kind"],
+                                                    "scope": item.get("scope", ""),
                                                     "title": item["title"]
                                                 }
                                                 for item in references
@@ -1167,4 +1256,3 @@ else:
         save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
                   st.session_state.editor_text, st.session_state.start_time,
                   st.session_state.final_text, st.session_state.is_finished,
-                  st.session_state.pre_test_done, st.session_state.task_started)
