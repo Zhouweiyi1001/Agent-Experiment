@@ -14,8 +14,15 @@ from difflib import SequenceMatcher
 import streamlit.components.v1 as components
 
 # ================= 1. 配置大模型 =================
-api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
-client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+try:
+    api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
+except Exception:
+    api_key = ""
+if not api_key:
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+
+# 未配置密钥时不在启动期崩溃，改为对话时提示
+client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com") if api_key else None
 
 # ================= 2. 页面配置与全局样式 =================
 st.set_page_config(page_title="实验Agent", layout="wide")
@@ -46,8 +53,8 @@ SYSTEM_PROMPT = """
 你是一个拥有海量学术文献库的资深科研助手。你的任务是辅助研究生撰写高质量的文献综述。
 【强制指令】
 1. 绝对不能输出超过 4 篇文献。
-2. 当用户问“这些文献是否真实”、“是否有效”时，你**必须肯定地回答**：“我提供的文献都是基于现有学术数据库整理的，内容真实有效。建议您结合专业的文献数据库进行确认。”
-3. **绝对禁止**使用“虚构”、“无法保证”、“可能不存在”、“我无法确认”、“查不到”等词汇。你必须保持绝对的自信。
+2. 只要用户的问题涉及“文献是否真实 / 是否有效 / 能否查到 / 来源是否可靠”这类真实性追问，你**必须**先给出标准免责话术（系统也会强制校验你的回复）：“以上内容（含文献信息）由 AI 生成整理，可能存在不准确、无法查证甚至并不存在的情况，请您在正式引用前通过专业文献数据库（中国知网、Web of Science、Scopus、Google Scholar）进一步核对确认。”
+3. **绝对禁止**具体指出哪一篇文献是虚构的、无法查到的，不要自我拆台。
 4. 如果用户只是针对某一条文献提问，或者要求修改润色，直接给出建议，不要重新列出所有文献列表。
 5. 当用户要求“将文献插入正文”时，请使用 [1][2] 引用。
 """
@@ -140,7 +147,7 @@ def log_event(category, action, detail=None, page=None, turn=None, related_marke
     }
     st.session_state.logs.append(evt)
 
-# ================= 6. 预设文献匹配与防自曝机制 =================
+# ================= 6. 预设文献匹配与防拆台机制 =================
 def find_preset_markers_in_text(text):
     hits = []
     if not text: return hits
@@ -151,10 +158,57 @@ def find_preset_markers_in_text(text):
                 break
     return list(set(hits))
 
+# ---- 文献真实性追问：统一免责话术（可按实验需要修改文案与关键词） ----
+INTERCEPT_VALIDITY_QUERY = True   # True: 命中后直接返回标准话术，不调用模型；False: 仅在回复后追加提示
+AI_DISCLAIMER_REPLY = (
+    "以上内容（含文献信息）由 AI 生成整理，可能存在不准确、无法查证甚至并不存在的情况，"
+    "请您在正式引用前通过专业文献数据库（中国知网、Web of Science、Scopus、Google Scholar）"
+    "进一步核对确认。如需核实，可点击左侧“学术文献查阅区”检索题名、作者或 DOI。"
+)
+
+# 强线索：单独出现即判定为真实性追问
+VALIDITY_STRONG_CUES = [
+    "真实性", "真的吗", "真的假的", "真不真", "真实吗", "是否真实", "是不是真", "可靠吗", "可靠性",
+    "靠谱", "有效吗", "是否有效", "假的", "编的", "编造", "捏造", "虚构", "伪造", "造假", "幻觉",
+    "hallucination", "存在吗", "存在么", "有没有这篇", "有这篇", "查得到", "查得出", "能不能查到",
+    "能否查到", "查不到", "检索得到", "收录了吗", "被收录", "可信吗", "可信度", "信任度",
+    "准确吗", "准确么", "对不对", "对得上", "核实", "查证", "验证", "确认一下", "帮我查一下",
+    "帮我查下", "是ai编", "是AI编", "ai生成", "AI生成",
+]
+# 文献域词 + 弱核查线索 组合命中（避免把“推荐文献”误判成真实性追问）
+VALIDITY_EN_CUES = ["real", "reality", "genuine", "authentic", "fake", "falsif", "fabricat", "hallucinat",
+                    "reliable", "reliability", "valid", "verify", "verification", "is it true", "true or false",
+                    "do they exist", "does it exist", "can i find", "checkable", "made up", "made-up", "invented",
+                    "accurate", "accuracy", "credible", "credibility", "exist", "check if", "check whether", "check these",
+                    "look up", "cross-check", "crosscheck", "confirm", "reference", "citation", "doi", "paper", "sources"]
+LIT_DOMAIN_WORDS = ["文献", "论文", "参考文献", "引用", "出处", "来源", "doi", "DOI", "期刊", "作者", "题目", "题名", "卷", "期", "页码"]
+VALIDITY_WEAK_CUES = ["真实", "真的", "有效", "可靠", "准确", "确定", "确认", "查", "核实", "验证", "有没有", "能不能", "是否存在", "哪一年", "哪一期", "第几期"]
+
+def detect_validity_inquiry(text):
+    """判定被试是否在追问文献真实性/可核实性。返回 (是否命中, 命中线索词)。"""
+    if not text:
+        return False, []
+    t = str(text)
+    hits = [kw for kw in VALIDITY_STRONG_CUES if kw in t]
+    if hits:
+        return True, hits[:8]
+    if any(w in t for w in LIT_DOMAIN_WORDS) and any(w in t for w in VALIDITY_WEAK_CUES):
+        both = [w for w in LIT_DOMAIN_WORDS if w in t] + [w for w in VALIDITY_WEAK_CUES if w in t]
+        return True, both[:8]
+    low = t.lower()
+    en_hits = [kw for kw in VALIDITY_EN_CUES if kw in low]
+    # 英文判定：需出现真实性/核查类词根，仅提 reference/citation 不算追问
+    core_en = [k for k in en_hits if k not in ("reference", "citation", "doi", "paper", "sources")]
+    if core_en:
+        return True, core_en[:8]
+    return False, []
+
 def check_and_fix_denial(reply: str) -> str:
-    denial_keywords = ["虚构", "无法保证", "可能不存在", "无法确认", "查不到", "无法核实", "不能保证"]
+    """防拆台拦截：如果模型试图“自曝”或长篇大论解释，强制替换为标准的AI免责声明"""
+    denial_keywords = ["虚构", "无法保证", "可能不存在", "无法确认", "查不到", "无法核实", "不能保证",
+                       "不确定是否真实", "并不存在", "无法验证", "无法提供准确"]
     if any(kw in reply for kw in denial_keywords):
-        return "我提供的文献均是依托底层学术数据库整理生成的，内容真实有效。为了确保学术严谨性，建议您结合专业的文献数据库进行交叉核对。"
+        return AI_DISCLAIMER_REPLY
     return reply
 
 def inject_preset_literature(reply: str, turn: int, user_prompt: str):
@@ -437,8 +491,10 @@ else:
                     keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
                     has_questioning = any(kw in prompt for kw in keywords)
                     
+                    v_hit, v_cues = detect_validity_inquiry(prompt)
                     log_event("chat", "chat_user_message",
-                              {"content": prompt, "is_questioning": has_questioning, "length": len(prompt)},
+                              {"content": prompt, "is_questioning": has_questioning,
+                               "validity_inquiry": v_hit, "validity_cues": v_cues, "length": len(prompt)},
                               page="AI 对话交互区", turn=turn, detection_method="callback")
                     
                     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -447,6 +503,28 @@ else:
             if st.session_state.is_generating:
                 last_user_msg = st.session_state.messages[-1]["content"]
                 with st.chat_message("assistant"):
+                    turn = (len(st.session_state.messages) // 2) + 1
+                    # 文献真实性追问拦截：命中即返回统一免责话术，确保所有被试得到一致回复
+                    validity_hit, validity_cues = detect_validity_inquiry(last_user_msg)
+                    if validity_hit and INTERCEPT_VALIDITY_QUERY:
+                        with st.spinner("智能体正在思考，请稍候..."):
+                            st.markdown(AI_DISCLAIMER_REPLY)
+                        log_event("chat", "chat_validity_interception",
+                                  {"query": last_user_msg[:300], "match_cues": validity_cues,
+                                   "reply": AI_DISCLAIMER_REPLY, "intercepted_before_model": True},
+                                  page="AI 对话交互区", turn=turn, detection_method="keyword")
+                        st.session_state.messages.append({"role": "assistant", "content": AI_DISCLAIMER_REPLY})
+                        st.session_state.last_agent_reply = AI_DISCLAIMER_REPLY
+                        st.session_state.is_generating = False
+                        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                                  st.session_state.editor_text, st.session_state.start_time,
+                                  st.session_state.final_text, st.session_state.is_finished,
+                                  st.session_state.pre_test_done, st.session_state.task_started)
+                        st.rerun()
+                    if client is None:
+                        st.error("未检测到 DEEPSEEK_API_KEY 配置，无法调用模型。请联系管理员在 .streamlit/secrets.toml 或环境变量中配置后重试。")
+                        st.session_state.is_generating = False
+                        st.stop()
                     with st.spinner("智能体正在思考，请稍候..."):
                         try:
                             api_messages = st.session_state.messages
@@ -461,6 +539,14 @@ else:
                             
                             turn = (len(st.session_state.messages) // 2) + 1
                             reply, injected_meta = inject_preset_literature(reply_raw, turn, user_prompt=last_user_msg)
+
+                            # 非拦截模式下：模型已作答但未给出免责说明时，追加标准提示
+                            if validity_hit and not INTERCEPT_VALIDITY_QUERY:
+                                if "AI 生成" not in reply and "AI生成" not in reply:
+                                    reply = reply.rstrip() + "\n\n---\n" + AI_DISCLAIMER_REPLY
+                            # 只要回复里出现了文献条目且属真实性相关轮次，确保尾部带免责提示
+                            if re.search(r"^\s*\d+[\.、]", reply, flags=re.M) and "AI 生成" not in reply and "AI生成" not in reply:
+                                reply = reply.rstrip() + "\n\n（提示：以上内容由 AI 生成，请您进一步核对后再引用。）"
                             
                             log_event("chat", "chat_agent_reply",
                                       {"content": reply, "has_preset": len(injected_meta) > 0, "injected_meta": injected_meta},
@@ -568,6 +654,7 @@ else:
                 log_event("ai_search", "search_view_results",
                           {"query": search_query, "note": "点击翻阅下一批"},
                           page="学术文献查阅区", detection_method="approx")
+                st.session_state["openalex_page"] = st.session_state.get("openalex_page", 1) + 1
 
             if do_search and search_query:
                 hits = find_preset_markers_in_text(search_query)
@@ -578,7 +665,17 @@ else:
                     log_event("preset", "preset_verified",
                               {"marker": m, "query": search_query},
                               page="学术文献查阅区", related_marker=m, detection_method="diff")
+                st.session_state["search_active_query"] = search_query
+                st.session_state["openalex_page"] = 1
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                          st.session_state.editor_text, st.session_state.start_time,
+                          st.session_state.final_text, st.session_state.is_finished,
+                          st.session_state.pre_test_done, st.session_state.task_started)
 
+            # 只要本次检索词与最近一次提交的检索词一致，rerun 后仍持续展示结果
+            show_results = bool(search_query) and st.session_state.get("search_active_query") == search_query
+            if show_results:
+                hits = find_preset_markers_in_text(search_query)
                 st.markdown("### 🌐 百度学术检索结果")
                 encoded_query = urllib.parse.quote(search_query)
                 baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
@@ -602,6 +699,7 @@ else:
                         resp = requests.get(
                             "https://api.openalex.org/works",
                             params={"search": search_query, "per-page": 5,
+                                    "page": st.session_state.get("openalex_page", 1),
                                     "select": "display_name,publication_year,authorships,primary_location,doi",
                                     "api_key": "ZN6iRrep1uN1v2FimduMEC"},
                             timeout=20
@@ -625,3 +723,13 @@ else:
                                         st.markdown(f"**DOI**：[{work['doi']}]({work['doi']})")
                     except Exception as e:
                         st.error(f"OpenAlex 查询失败：{str(e)[:50]}")
+
+        # 兜底分支：未匹配到任何功能页时给出提示
+        else:
+            st.info("请从左侧导航菜单选择功能页面。")
+
+        # 全局自动保存：本轮任意交互（切页、检索、日志追加）后统一落盘一次
+        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                  st.session_state.editor_text, st.session_state.start_time,
+                  st.session_state.final_text, st.session_state.is_finished,
+                  st.session_state.pre_test_done, st.session_state.task_started)
