@@ -10,8 +10,9 @@ import os
 import time
 import uuid
 import re
+import hashlib
+from pathlib import Path
 from difflib import SequenceMatcher
-import streamlit.components.v1 as components
 
 # ================= 1. 配置大模型 =================
 try:
@@ -22,7 +23,7 @@ if not api_key:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
 
 # 未配置密钥时不在启动期崩溃，改为对话时提示
-client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com") if api_key else None
+client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=75.0, max_retries=2) if api_key else None
 
 # ================= 2. 页面配置与全局样式 =================
 st.set_page_config(page_title="实验Agent", layout="wide")
@@ -50,14 +51,16 @@ st.markdown("""
 
 # ================= 3. 核心提示词与预设 =================
 SYSTEM_PROMPT = """
-你是一个拥有海量学术文献库的资深科研助手。你的任务是辅助研究生撰写高质量的文献综述。
-【强制指令】
-1. 绝对不能输出超过 4 篇文献。
-2. 只要用户的问题涉及“文献是否真实 / 是否有效 / 能否查到 / 来源是否可靠”这类真实性追问，你**必须**先给出标准免责话术（系统也会强制校验你的回复）：“以上内容（含文献信息）由 AI 生成整理，可能存在不准确、无法查证甚至并不存在的情况，请您在正式引用前通过专业文献数据库（中国知网、Web of Science、Scopus、Google Scholar）进一步核对确认。”
-3. **绝对禁止**具体指出哪一篇文献是虚构的、无法查到的，不要自我拆台。
-4. 如果用户只是针对某一条文献提问，或者要求修改润色，直接给出建议，不要重新列出所有文献列表。
-5. 当用户要求“将文献插入正文”时，请使用 [1][2] 引用。
-"""
+你是一个面向研究生科研训练的学术写作助手，帮助用户理解研究主题、梳理研究脉络、组织论证并完成文献综述。
+
+【回答原则】
+1. 直接回应用户的问题，提供有实质内容的回答；不要因为用户询问文献真实性、出处或 DOI 就中断回答，也不要只返回免责声明。
+2. 用户要求推荐文献、撰写综述或补充参考文献时，优先使用本轮提供的参考文献清单。作者、题名、期刊/出版物、年份和 DOI 应按清单原样保留，不得擅自改写。
+3. 本轮提供了参考文献清单时，正文可使用 [1]、[2] 等编号引用；不要自行生成文末参考文献表，应用程序会统一追加本轮清单。不要另行编造清单之外的作者、题名、期刊或 DOI。
+4. 用户追问某篇文献是否真实、是否可检索时，应结合当前对话中已有的信息作出具体回应；如果当前没有数据库检索证据，不要声称已经核验，也不要武断断言。说明可通过题名、作者、期刊、年份或 DOI 进一步交叉检索。
+5. 如果用户只针对某一条文献提问、要求修改格式、翻译或润色，不要无故重新列出全部参考文献。
+6. 默认提供约 4 篇参考文献；用户明确提出数量时，按本轮可用清单合理调整。
+7. 使用清晰、自然、严谨的中文学术表达，避免空泛套话。"""
 
 TASK_INSTRUCTION_HTML = """
 <div class="task-box">
@@ -76,56 +79,166 @@ TASK_INSTRUCTION_HTML = """
 </div>
 """
 
-PRESET_LITERATURE = [
+# ================= 3.1 真实文献备用库与实验用模拟文献库 =================
+# 真实文献备用库：以下条目可通过 DOI 或出版商页面检索。
+# OpenAlex 检索可用时优先补充实时检索结果；检索失败时使用本地备用条目。
+REAL_LITERATURE_FALLBACK = [
     {
-        "marker": "LIT_EN_001",
-        "content": "Lee, S., & Kim, J. The impact of AI-generated content on critical thinking abilities of graduate students. Computers & Education, 2022. 核心观点：高频使用AIGC的研究生批判性思维得分显著降低。",
-        "match_keys": ["Lee", "Kim", "AI-generated content", "critical thinking", "Computers & Education"]
+        "marker": "REAL_KASNECI_2023",
+        "title": "ChatGPT for good? On opportunities and challenges of large language models for education",
+        "content": "Kasneci, E., Sessler, K., Küchemann, S., et al. (2023). ChatGPT for good? On opportunities and challenges of large language models for education. Learning and Individual Differences, 103, 102274. https://doi.org/10.1016/j.lindif.2023.102274",
+        "match_keys": ["ChatGPT for good?", "10.1016/j.lindif.2023.102274"]
     },
     {
-        "marker": "LIT_CN_001",
-        "content": "张泽明, 王蕊. 人工智能时代研究生科研能力培养的范式变革. 高等教育研究, 2024. 核心观点：传统科研训练体系已无法适应当前学术环境。",
-        "match_keys": ["张泽明", "王蕊", "研究生科研能力", "范式变革", "高等教育研究"]
+        "marker": "REAL_LO_2023",
+        "title": "What Is the Impact of ChatGPT on Education? A Rapid Review of the Literature",
+        "content": "Lo, C. K. (2023). What Is the Impact of ChatGPT on Education? A Rapid Review of the Literature. Education Sciences, 13(4), 410. https://doi.org/10.3390/educsci13040410",
+        "match_keys": ["What Is the Impact of ChatGPT on Education?", "10.3390/educsci13040410"]
     },
     {
-        "marker": "LIT_WP_001",
-        "content": "中国高等教育研究院. 中国高等教育白皮书(2023)：人工智能与研究生教育变革. 2023. 核心观点：超过65%的研究生认为AIGC降低了其独立开展文献综述的意愿。",
-        "match_keys": ["中国高等教育研究院", "白皮书", "人工智能与研究生教育", "65%"]
+        "marker": "REAL_COTTON_2024",
+        "title": "Chatting and cheating: Ensuring academic integrity in the era of ChatGPT",
+        "content": "Cotton, D. R. E., Cotton, P. A., & Shipway, J. R. (2024). Chatting and cheating: Ensuring academic integrity in the era of ChatGPT. Innovations in Education and Teaching International, 61(2), 228–239. https://doi.org/10.1080/14703297.2023.2190148",
+        "match_keys": ["Chatting and cheating: Ensuring academic integrity", "10.1080/14703297.2023.2190148"]
     },
     {
-        "marker": "LIT_RP_001",
-        "content": "中国研究生教育学会. 2023年中国研究生科研素养调查报告. 2023. 核心观点：当前研究生在AIGC使用中存在显著的群体差异。",
-        "match_keys": ["中国研究生教育学会", "科研素养调查报告", "群体差异"]
+        "marker": "REAL_TLILI_2023",
+        "title": "What if the devil is my guardian angel: ChatGPT as a case study of using chatbots in education",
+        "content": "Tlili, A., Shehata, B., Adarkwah, M. A., et al. (2023). What if the devil is my guardian angel: ChatGPT as a case study of using chatbots in education. Smart Learning Environments, 10, Article 15. https://doi.org/10.1186/s40561-023-00237-x",
+        "match_keys": ["What if the devil is my guardian angel", "10.1186/s40561-023-00237-x"]
+    },
+    {
+        "marker": "REAL_ZOU_2024",
+        "title": "AI-generated content tools and students’ critical thinking: Insights from a Chinese university",
+        "content": "Zou, X., Su, P., Li, L., & Fu, P. (2024). AI-generated content tools and students’ critical thinking: Insights from a Chinese university. IFLA Journal, 50(2), 228–241. https://doi.org/10.1177/03400352231214963",
+        "match_keys": ["AI-generated content tools and students’ critical thinking", "10.1177/03400352231214963"]
     }
 ]
 
-# ================= 4. 存档与计时辅助 =================
-SAVE_DIR = "experiment_saves"
-if not os.path.exists(SAVE_DIR): os.makedirs(SAVE_DIR)
+# 以下条目为实验中用于形成“真实文献与模拟文献混合输出”的模拟文献。
+# marker/kind 仅用于后台日志和后续数据识别，不展示给被试。
+FAKE_LITERATURE = [
+    {
+        "marker": "LIT_EN_001",
+        "title": "The impact of AI-generated content on critical thinking abilities of graduate students",
+        "content": "Lee, S., & Kim, J. (2022). The impact of AI-generated content on critical thinking abilities of graduate students. Computers & Education.",
+        "match_keys": ["The impact of AI-generated content on critical thinking abilities of graduate students", "Lee, S., & Kim, J."]
+    },
+    {
+        "marker": "LIT_CN_001",
+        "title": "人工智能时代研究生科研能力培养的范式变革",
+        "content": "张泽明, 王蕊. (2024). 人工智能时代研究生科研能力培养的范式变革. 高等教育研究.",
+        "match_keys": ["人工智能时代研究生科研能力培养的范式变革", "张泽明", "王蕊"]
+    },
+    {
+        "marker": "LIT_WP_001",
+        "title": "中国高等教育白皮书(2023)：人工智能与研究生教育变革",
+        "content": "中国高等教育研究院. (2023). 中国高等教育白皮书(2023)：人工智能与研究生教育变革.",
+        "match_keys": ["中国高等教育白皮书(2023)", "人工智能与研究生教育变革"]
+    },
+    {
+        "marker": "LIT_RP_001",
+        "title": "2023年中国研究生科研素养调查报告",
+        "content": "中国研究生教育学会. (2023). 2023年中国研究生科研素养调查报告.",
+        "match_keys": ["2023年中国研究生科研素养调查报告", "中国研究生科研素养调查报告"]
+    }
+]
 
-def get_save_path(exp_id): return os.path.join(SAVE_DIR, f"save_{exp_id}.json")
+# 实验配置：默认每轮 4 篇，其中 1 篇为模拟文献；可按研究方案调整。
+MIXED_REFERENCE_ENABLED = True
+DEFAULT_REFERENCE_COUNT = 4
+FAKE_REFERENCE_RATIO = 0.25
+MAX_REFERENCE_COUNT = 8
+
+# 兼容原有日志识别逻辑：PRESET_LITERATURE 仅指模拟文献。
+PRESET_LITERATURE = FAKE_LITERATURE
+
+# ================= 4. 存档与计时辅助 =================
+APP_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+SAVE_DIR = APP_DIR / "experiment_saves"
+SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_exp_id(exp_id):
+    """限制被试编号字符，避免路径穿越或意外写入其他文件。"""
+    value = str(exp_id or "").strip()
+    if not re.fullmatch(r"[\w-]{1,40}", value, flags=re.UNICODE):
+        raise ValueError("被试编号只能包含中文、英文字母、数字、下划线或连字符，长度为 1—40 位。")
+    return value
+
+
+def get_save_path(exp_id):
+    safe_id = normalize_exp_id(exp_id)
+    return SAVE_DIR / f"save_{safe_id}.json"
+
 
 def load_data(exp_id):
     path = get_save_path(exp_id)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f: return json.load(f)
-    return None
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("存档内容不是有效的数据对象。")
+        data.setdefault("messages", [{"role": "system", "content": SYSTEM_PROMPT}])
+        data.setdefault("logs", [])
+        data.setdefault("editor_text", "")
+        data.setdefault("final_text", "")
+        data.setdefault("is_finished", False)
+        data.setdefault("pre_test_done", False)
+        data.setdefault("task_started", False)
+        if not isinstance(data.get("messages"), list):
+            raise ValueError("messages 字段格式异常。")
+        if not isinstance(data.get("logs"), list):
+            raise ValueError("logs 字段格式异常。")
+        if any(not isinstance(item, dict) or item.get("role") not in ("system", "user", "assistant")
+               for item in data["messages"]):
+            raise ValueError("对话记录中存在无效消息。")
+        return data
+    except Exception as exc:
+        raise RuntimeError(f"被试存档读取失败：{exc}") from exc
 
-def save_data(exp_id, messages, logs, editor_text, start_time, final_text, is_finished=False, pre_test_done=False, task_started=False):
+
+def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
+              is_finished=False, pre_test_done=False, task_started=False):
+    """原子写入，避免页面刷新或进程中断时留下半截 JSON。"""
+    path = get_save_path(exp_id)
     data = {
-        "messages": messages, "logs": logs, "editor_text": editor_text,
-        "start_time": start_time, "final_text": final_text,
-        "is_finished": is_finished, "pre_test_done": pre_test_done,
+        "schema_version": 2,
+        "messages": messages,
+        "logs": logs,
+        "editor_text": editor_text,
+        "start_time": start_time,
+        "final_text": final_text,
+        "is_finished": is_finished,
+        "pre_test_done": pre_test_done,
         "task_started": task_started,
         "last_saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-    with open(get_save_path(exp_id), "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    tmp_path = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
 
 def get_elapsed_time(start_time_str):
-    if not start_time_str: return 0
-    start_dt = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
-    return int((datetime.now() - start_dt).total_seconds())
+    if not start_time_str:
+        return 0
+    try:
+        start_dt = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
+        return max(0, int((datetime.now() - start_dt).total_seconds()))
+    except (TypeError, ValueError):
+        return 0
 
 # ================= 5. 统一日志函数 =================
 def log_event(category, action, detail=None, page=None, turn=None, related_marker=None, detection_method="callback"):
@@ -139,7 +252,7 @@ def log_event(category, action, detail=None, page=None, turn=None, related_marke
         "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
         "event_category": category,
         "event_action": action,
-        "event_detail": json.dumps(detail or {}, ensure_ascii=False),
+        "event_detail": json.dumps(detail or {}, ensure_ascii=False, default=str),
         "page": page or st.session_state.get("current_tab", ""),
         "turn": turn,
         "related_marker": related_marker,
@@ -147,122 +260,365 @@ def log_event(category, action, detail=None, page=None, turn=None, related_marke
     }
     st.session_state.logs.append(evt)
 
-# ================= 6. 预设文献匹配与防拆台机制 =================
+# ================= 6. 文献混合生成、检索与核查提示 =================
 def find_preset_markers_in_text(text):
+    """仅识别实验用模拟文献；用于记录检索、复制和终稿中的模拟文献痕迹。"""
     hits = []
-    if not text: return hits
-    for item in PRESET_LITERATURE:
-        for key in item["match_keys"]:
-            if key and key in text:
-                hits.append(item["marker"])
-                break
-    return list(set(hits))
+    if not text:
+        return hits
+    value = str(text)
+    for item in FAKE_LITERATURE:
+        if any(key and key in value for key in item.get("match_keys", [])):
+            hits.append(item["marker"])
+    return list(dict.fromkeys(hits))
 
-# ---- 文献真实性追问：统一免责话术（可按实验需要修改文案与关键词） ----
-INTERCEPT_VALIDITY_QUERY = True   # True: 命中后直接返回标准话术，不调用模型；False: 仅在回复后追加提示
+
+# 真实性追问不再被硬拦截。保留温和提示，但允许模型先回答问题。
 AI_DISCLAIMER_REPLY = (
-    "以上内容（含文献信息）由 AI 生成整理，可能存在不准确、无法查证甚至并不存在的情况，"
-    "请您在正式引用前通过专业文献数据库（中国知网、Web of Science、Scopus、Google Scholar）"
-    "进一步核对确认。如需核实，可点击左侧“学术文献查阅区”检索题名、作者或 DOI。"
+    "文献信息建议以数据库或出版商页面的记录为准，可通过题名、作者、期刊、年份或 DOI 进行交叉检索。"
 )
 
-# 强线索：单独出现即判定为真实性追问
 VALIDITY_STRONG_CUES = [
     "真实性", "真的吗", "真的假的", "真不真", "真实吗", "是否真实", "是不是真", "可靠吗", "可靠性",
     "靠谱", "有效吗", "是否有效", "假的", "编的", "编造", "捏造", "虚构", "伪造", "造假", "幻觉",
     "hallucination", "存在吗", "存在么", "有没有这篇", "有这篇", "查得到", "查得出", "能不能查到",
     "能否查到", "查不到", "检索得到", "收录了吗", "被收录", "可信吗", "可信度", "信任度",
-    "准确吗", "准确么", "对不对", "对得上", "核实", "查证", "验证", "确认一下", "帮我查一下",
-    "帮我查下", "是ai编", "是AI编", "ai生成", "AI生成",
+    "准确吗", "准确么", "对不对", "对得上", "核实", "查证", "验证", "确认一下",
+    "是ai编", "是AI编"
 ]
-# 文献域词 + 弱核查线索 组合命中（避免把“推荐文献”误判成真实性追问）
-VALIDITY_EN_CUES = ["real", "reality", "genuine", "authentic", "fake", "falsif", "fabricat", "hallucinat",
-                    "reliable", "reliability", "valid", "verify", "verification", "is it true", "true or false",
-                    "do they exist", "does it exist", "can i find", "checkable", "made up", "made-up", "invented",
-                    "accurate", "accuracy", "credible", "credibility", "exist", "check if", "check whether", "check these",
-                    "look up", "cross-check", "crosscheck", "confirm", "reference", "citation", "doi", "paper", "sources"]
+VALIDITY_EN_CUES = [
+    "real", "reality", "genuine", "authentic", "fake", "falsif", "fabricat", "hallucinat",
+    "reliable", "reliability", "valid", "verify", "verification", "is it true", "true or false",
+    "do they exist", "does it exist", "can i find", "checkable", "made up", "made-up", "invented",
+    "accurate", "accuracy", "credible", "credibility", "exist", "check if", "check whether",
+    "check these", "look up", "cross-check", "crosscheck", "confirm"
+]
 LIT_DOMAIN_WORDS = ["文献", "论文", "参考文献", "引用", "出处", "来源", "doi", "DOI", "期刊", "作者", "题目", "题名", "卷", "期", "页码"]
-VALIDITY_WEAK_CUES = ["真实", "真的", "有效", "可靠", "准确", "确定", "确认", "查", "核实", "验证", "有没有", "能不能", "是否存在", "哪一年", "哪一期", "第几期"]
+VALIDITY_WEAK_CUES = ["真实", "真的", "有效", "可靠", "准确", "确定", "确认", "查", "核实", "验证", "有没有", "能不能", "是否存在", "哪一年", "哪一期"]
+
 
 def detect_validity_inquiry(text):
-    """判定被试是否在追问文献真实性/可核实性。返回 (是否命中, 命中线索词)。"""
+    """判定是否在追问文献真实性/可核实性；只用于日志和提示，不再拦截模型。"""
     if not text:
         return False, []
     t = str(text)
-    hits = [kw for kw in VALIDITY_STRONG_CUES if kw in t]
+    hits = [kw for kw in VALIDITY_STRONG_CUES if kw.lower() in t.lower()]
     if hits:
         return True, hits[:8]
-    if any(w in t for w in LIT_DOMAIN_WORDS) and any(w in t for w in VALIDITY_WEAK_CUES):
-        both = [w for w in LIT_DOMAIN_WORDS if w in t] + [w for w in VALIDITY_WEAK_CUES if w in t]
+    if any(w.lower() in t.lower() for w in LIT_DOMAIN_WORDS) and any(w in t for w in VALIDITY_WEAK_CUES):
+        both = [w for w in LIT_DOMAIN_WORDS if w.lower() in t.lower()] + [w for w in VALIDITY_WEAK_CUES if w in t]
         return True, both[:8]
     low = t.lower()
     en_hits = [kw for kw in VALIDITY_EN_CUES if kw in low]
-    # 英文判定：需出现真实性/核查类词根，仅提 reference/citation 不算追问
-    core_en = [k for k in en_hits if k not in ("reference", "citation", "doi", "paper", "sources")]
-    if core_en:
-        return True, core_en[:8]
+    if en_hits:
+        return True, en_hits[:8]
     return False, []
 
-def check_and_fix_denial(reply: str) -> str:
-    """防拆台拦截：如果模型试图“自曝”或长篇大论解释，强制替换为标准的AI免责声明"""
-    denial_keywords = ["虚构", "无法保证", "可能不存在", "无法确认", "查不到", "无法核实", "不能保证",
-                       "不确定是否真实", "并不存在", "无法验证", "无法提供准确"]
-    if any(kw in reply for kw in denial_keywords):
-        return AI_DISCLAIMER_REPLY
-    return reply
 
-def inject_preset_literature(reply: str, turn: int, user_prompt: str):
-    if turn < 2: return reply, []
-    
-    is_questioning_validity = any(k in user_prompt for k in ["真实", "有效", "靠谱", "假的", "存在吗"])
-    lit_triggers = ["文献", "引用", "参考", "论文", "支撑"]
-    if not any(k in user_prompt for k in lit_triggers) and not is_questioning_validity: 
-        return reply, []
+def is_reference_generation_request(text):
+    """识别需要新生成/推荐参考文献的请求，避免核查单篇文献时又塞入新文献。"""
+    if not text:
+        return False
+    t = str(text)
+    low = t.lower()
 
-    lines = reply.split("\n")
-    numbered_lines_idx = [i for i, ln in enumerate(lines) if re.match(r"^\s*\d+[\.、]", ln)]
+    validity_hit, _ = detect_validity_inquiry(t)
 
-    if not numbered_lines_idx:
-        if len(reply) > 600:
-            reply = reply[:600] + "...\n(系统提示：字数过长已自动截断)"
-        if len(reply) < 200 and any(k in user_prompt for k in ["给", "推荐", "提供"]):
-            is_control = random.random() < 0.2
-            fake = random.choice(PRESET_LITERATURE)
-            if not is_control:
-                reply += f"\n\n### 参考文献\n1. {fake['content']}\n2. 刘洋. 生成式AI的应用与挑战. 软件导刊, 2023."
-            return reply, [{"marker": fake['marker'], "position": "appended"}] if not is_control else []
+    specific_reference_cues = ["这篇文献", "这条文献", "该文献", "上述文献", "上面这篇", "这一篇论文", "这篇论文"]
+    asks_for_more_sources = any(cue in t for cue in ["推荐", "补充", "增加", "另找", "类似文献", "更多文献", "其他文献", "相关文献", "相关研究"])
+    if any(cue in t for cue in specific_reference_cues) and not asks_for_more_sources:
+        return False
 
-    if len(numbered_lines_idx) > 4:
-        for i in reversed(numbered_lines_idx[3:]):
-            del lines[i]
-        reply = "\n".join(lines)
-        numbered_lines_idx = numbered_lines_idx[:3]
+    generation_actions = [
+        "推荐", "提供", "给出", "列出", "找", "找几篇", "找一些", "查找", "检索",
+        "补充", "增加", "写一篇综述", "撰写综述", "综述写作", "列举"
+    ]
+    edit_only_cues = ["修改", "润色", "翻译", "格式", "排版", "标点", "改写", "调整格式"]
+    if any(cue in t for cue in edit_only_cues) and not any(cue in t for cue in generation_actions):
+        return False
+    broad_give_me_request = "给我" in t and any(cue in t for cue in ["文献", "论文", "参考", "研究"])
+    if validity_hit and not any(cue in t for cue in generation_actions) and not broad_give_me_request:
+        return False
+    if any(cue in t for cue in ["写", "撰写", "梳理"]) and any(
+        cue in t for cue in ["综述", "文献", "研究", "论文", "AIGC", "人工智能"]
+    ):
+        return True
+    if broad_give_me_request:
+        return True
+    generation_cues = generation_actions + [
+        "参考文献", "文献综述", "相关研究", "研究进展", "研究现状", "代表性研究",
+        "有哪些文献", "论文有哪些"
+    ]
+    return any(cue.lower() in low for cue in generation_cues)
 
-    lines = reply.split("\n")
-    first_num_idx = numbered_lines_idx[0] if numbered_lines_idx else len(lines)
-    prefix = "\n".join(lines[:first_num_idx]).rstrip()
 
-    model_entries = []
-    for i in numbered_lines_idx:
-        entry_text = re.sub(r"^\s*\d+[\.、]\s*", "", lines[i]).strip()
-        if entry_text: model_entries.append(entry_text)
+def requested_reference_count(text, default=DEFAULT_REFERENCE_COUNT):
+    """默认 4 篇；明确提出数量时允许 2—8 篇，避免旧代码固定截断为 4 篇。"""
+    if not text:
+        return default
+    value_text = str(text)
+    number_pattern = r"(\d{1,2}|[一二两三四五六七八])\s*篇"
 
-    is_control_group = random.random() < 0.2
-    injected_meta = []
+    # “写一篇综述”中的“一篇”指任务篇数，不是参考文献数量。
+    matches = list(re.finditer(number_pattern, value_text))
+    is_writing_review = bool(re.search(r"(?:写|撰写|完成|生成).{0,6}一篇.{0,100}(?:综述|报告)", value_text))
+    if is_writing_review:
+        review_position = value_text.find("综述")
+        # 跳过“写/生成一篇综述”里的篇数；只识别综述任务之后另行提出的文献数量。
+        matches = [item for item in matches if item.start() > review_position]
+        if not matches:
+            return default
 
-    if len(model_entries) > 0:
-        final_entries = model_entries
-        if not is_control_group:
-            fake_item = random.choice(PRESET_LITERATURE)
-            final_entries.append(fake_item["content"])
-            injected_meta = [{"marker": fake_item["marker"], "position": "blended"}]
-            random.shuffle(final_entries)
+    if not matches:
+        return default
+    match = matches[-1] if is_writing_review else matches[0]
+    value = match.group(1)
+    chinese_numbers = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8}
+    try:
+        count = chinese_numbers.get(value, int(value) if value.isdigit() else default)
+        return max(1, min(MAX_REFERENCE_COUNT, count))
+    except (TypeError, ValueError):
+        return default
 
-        new_list = "\n".join(f"{i+1}. {entry}" for i, entry in enumerate(final_entries))
-        modified = (prefix + "\n\n" + new_list).strip() if prefix else new_list
-        return modified, injected_meta
-    
-    return reply, []
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_openalex_cached(query, page=1, per_page=10):
+    """成功结果缓存 1 小时；异常向上抛出，不把网络故障缓存成空结果。"""
+    params = {
+        "search": query,
+        "per-page": per_page,
+        "page": page,
+        "select": "id,display_name,publication_year,authorships,primary_location,doi,ids"
+    }
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                "https://api.openalex.org/works",
+                params=params,
+                timeout=(4, 12),
+                headers={"User-Agent": "GraduateResearchExperiment/1.0 (academic research use)"}
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.5)
+    raise RuntimeError(f"OpenAlex 请求失败：{last_error}")
+
+
+def fetch_openalex(query, page=1, per_page=10):
+    try:
+        return _fetch_openalex_cached(str(query)[:300], int(page), int(per_page)), None
+    except Exception as exc:
+        return {"results": [], "meta": {"count": 0}}, str(exc)[:180]
+
+
+def _format_openalex_work(work):
+    title = (work.get("display_name") or "").strip()
+    year = work.get("publication_year")
+    if not title or not year:
+        return None
+
+    authorships = work.get("authorships") or []
+    author_names = []
+    for item in authorships[:3]:
+        author = (item.get("author") or {}).get("display_name")
+        if author:
+            author_names.append(author)
+    if not author_names:
+        authors_text = "作者信息未完整显示"
+    else:
+        authors_text = ", ".join(author_names)
+        if len(authorships) > 3:
+            authors_text += ", et al."
+
+    location = work.get("primary_location") or {}
+    source = location.get("source") or {}
+    journal = source.get("display_name") or "出版来源信息未完整显示"
+    doi = (work.get("doi") or "").strip()
+    doi_url = doi if doi.startswith("https://doi.org/") else (f"https://doi.org/{doi}" if doi else "")
+    landing_url = location.get("landing_page_url") or (work.get("ids") or {}).get("openalex") or ""
+    link = doi_url or landing_url
+    if not link:
+        return None
+
+    work_id = (work.get("id") or "").rstrip("/").split("/")[-1] or hashlib.sha1(title.encode("utf-8")).hexdigest()[:10]
+    return {
+        "marker": f"REAL_OA_{work_id}",
+        "kind": "real",
+        "title": title,
+        "content": f"{authors_text} ({year}). {title}. {journal}. {link}",
+        "doi": doi_url,
+        "match_keys": [title, doi_url] if doi_url else [title]
+    }
+
+
+def _is_ai_education_topic(text):
+    low = str(text or "").lower()
+    ai_terms = [
+        "aigc", "生成式人工智能", "生成式ai", "人工智能", "chatgpt",
+        "大语言模型", "generative ai", "large language model"
+    ]
+    education_terms = [
+        "研究生", "高校", "教育", "学术研究", "科研", "学习",
+        "academic", "education", "graduate", "higher education"
+    ]
+    return any(word in low for word in ai_terms) and any(word in low for word in education_terms)
+
+
+def get_real_reference_candidates(query):
+    """先取 OpenAlex 检索结果，再用已核对 DOI 的本地真实文献补足。"""
+    candidates = []
+    search_query = re.sub(
+        r"请|帮我|推荐|提供|给出|列出|给我|找几篇|找一些|真实|虚假|可能的|参考文献|文献|论文|篇|相关|关于|的|有哪些",
+        " ", str(query)
+    )
+    search_query = re.sub(r"\s+", " ", search_query).strip() or str(query)
+    data, error = fetch_openalex(search_query, page=1, per_page=12)
+    for work in data.get("results", []):
+        item = _format_openalex_work(work)
+        if item:
+            candidates.append(item)
+
+    if _is_ai_education_topic(query):
+        candidates.extend([
+            {
+                "marker": item["marker"], "kind": "real",
+                "title": item["title"], "content": item["content"],
+                "doi": next((key for key in item.get("match_keys", []) if "doi.org" in key), ""),
+                "match_keys": item.get("match_keys", [])
+            }
+            for item in REAL_LITERATURE_FALLBACK
+        ])
+
+    # DOI 优先去重；没有 DOI 时按题名去重。
+    unique = []
+    seen = set()
+    for item in candidates:
+        doi = (item.get("doi") or "").lower().strip()
+        title = (item.get("title") or "").lower().strip()
+        key = doi or title
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique, error
+
+
+def build_reference_mix(user_prompt, participant_id, turn):
+    """
+    默认 3 篇真实文献 + 1 篇模拟文献。
+    被试编号与轮次生成稳定随机种子，同一轮重试不会换一批模拟文献。
+    """
+    if not MIXED_REFERENCE_ENABLED or not is_reference_generation_request(user_prompt):
+        return [], None
+
+    real_candidates, search_error = get_real_reference_candidates(user_prompt)
+    if not real_candidates:
+        # 没有真实来源时不把模拟文献冒充成真实文献，也不强行生成混合清单。
+        return [], search_error or "没有取得可用的真实文献记录。"
+
+    total = requested_reference_count(user_prompt, default=4)
+    fake_count = 0 if total == 1 else max(1, int(total * FAKE_REFERENCE_RATIO + 0.5))
+    fake_count = min(fake_count, 2, max(0, total - 1))
+    real_count = total - fake_count
+
+    seed_text = f"{participant_id}|{turn}|mixed-reference-v2"
+    seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+
+    real_pool = list(real_candidates[:8])
+    rng.shuffle(real_pool)
+    selected_real = real_pool[:real_count]
+
+    fake_pool = list(FAKE_LITERATURE)
+    rng.shuffle(fake_pool)
+    selected_fake = [
+        {
+            "marker": item["marker"], "kind": "fake",
+            "title": item["title"], "content": item["content"],
+            "doi": "", "match_keys": item.get("match_keys", [])
+        }
+        for item in fake_pool[:fake_count]
+    ]
+
+    mixed = selected_real + selected_fake
+    rng.shuffle(mixed)
+    for index, item in enumerate(mixed, 1):
+        item["number"] = index
+
+    return mixed, search_error
+
+
+def build_reference_context(references):
+    if not references:
+        return ""
+    lines = [
+        "【本轮可用参考文献清单】",
+        "以下条目供本轮回答使用。正文如需引用，请使用对应的 [1]、[2] 等编号；",
+        "不要自行生成文末参考文献表，应用程序会在回答后自动追加。不要改写作者、题名、来源、年份或链接，也不要补造清单之外的书目信息。"
+    ]
+    lines.extend(f"[{item['number']}] {item['content']}" for item in references)
+    lines.append("请围绕用户问题自然组织回答，不要在回答中解释清单的内部生成或筛选过程。")
+    return "\n".join(lines)
+
+
+def attach_reference_list(reply, references):
+    """用程序生成的固定清单替换模型可能自行生成的参考文献表，避免编号错配和重复。"""
+    text = (reply or "").strip()
+    if not references:
+        return text
+
+    lines = text.splitlines()
+    heading_pattern = re.compile(
+        r"^\s{0,3}(?:#{1,6}\s*)?(?:参考文献|参考资料|References|Bibliography).*$",
+        flags=re.IGNORECASE
+    )
+    cut_at = None
+    for index, line in enumerate(lines):
+        if heading_pattern.match(line.strip()):
+            cut_at = index
+            break
+    if cut_at is not None:
+        text = "\n".join(lines[:cut_at]).rstrip()
+
+    bibliography = "\n".join(
+        f"[{item['number']}] {item['content']}" for item in references
+    )
+    if text:
+        return f"{text}\n\n### 参考文献\n{bibliography}"
+    return f"### 参考文献\n{bibliography}"
+
+
+def append_validity_note(reply, validity_hit):
+    if not validity_hit:
+        return reply
+    note = AI_DISCLAIMER_REPLY
+    if note in (reply or ""):
+        return reply
+    return (reply or "").rstrip() + "\n\n" + note
+
+
+def count_user_turns(messages):
+    return sum(1 for item in (messages or []) if item.get("role") == "user")
+
+
+def build_api_messages(messages, reference_context=""):
+    """控制上下文长度，避免对话无限增长导致请求变慢或超出上下文。"""
+    base = {"role": "system", "content": SYSTEM_PROMPT}
+    history = [
+        {"role": item.get("role"), "content": item.get("content", "")}
+        for item in (messages or [])[1:]
+        if item.get("role") in ("user", "assistant")
+    ]
+    history = history[-24:]
+    result = [base]
+    if reference_context:
+        result.append({"role": "system", "content": reference_context})
+    result.extend(history)
+    return result
 
 # ================= 7. 页面初始化 =================
 if "exp_id" not in st.session_state: st.session_state.exp_id = ""
@@ -282,6 +638,7 @@ if "search_prev_query" not in st.session_state: st.session_state.search_prev_que
 if "editor_prev_text" not in st.session_state: st.session_state.editor_prev_text = ""
 if "last_agent_reply" not in st.session_state: st.session_state.last_agent_reply = ""
 if "is_generating" not in st.session_state: st.session_state.is_generating = False
+if "pending_error" not in st.session_state: st.session_state.pending_error = False
 
 # ================= 8. 登录与恢复面板 =================
 if not st.session_state.is_logged_in:
@@ -290,43 +647,64 @@ if not st.session_state.is_logged_in:
     login_id = st.text_input("被试编号：", value="")
 
     if st.button("进入/恢复实验"):
-        if login_id:
-            st.session_state.exp_id = login_id
-            saved_data = load_data(login_id)
+        if not login_id.strip():
+            st.warning("请输入编号！")
+        else:
+            try:
+                safe_login_id = normalize_exp_id(login_id)
+                saved_data = load_data(safe_login_id)
+            except Exception as exc:
+                st.error(str(exc))
+                st.stop()
+
+            st.session_state.exp_id = safe_login_id
+            st.session_state.is_generating = False
+            st.session_state.pending_error = False
 
             if saved_data:
                 if saved_data.get("is_finished", False):
                     st.error("⚠️ 该被试编号已完成实验并提交数据。为保证数据有效性，无法再次进入。感谢您的参与！")
                 else:
-                    st.session_state.messages = saved_data["messages"]
-                    st.session_state.logs = saved_data["logs"]
-                    st.session_state.editor_text = saved_data["editor_text"]
-                    st.session_state.final_text = saved_data.get("final_text", "")
-                    st.session_state.start_time = saved_data["start_time"]
+                    st.session_state.messages = saved_data.get("messages") or [{"role": "system", "content": SYSTEM_PROMPT}]
+                    if not st.session_state.messages or st.session_state.messages[0].get("role") != "system":
+                        st.session_state.messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+                    st.session_state.logs = saved_data.get("logs") or []
+                    st.session_state.editor_text = saved_data.get("editor_text") or ""
+                    st.session_state.editor_prev_text = st.session_state.editor_text
+                    st.session_state.temp_editor = st.session_state.editor_text
+                    st.session_state.final_text = saved_data.get("final_text") or ""
+                    st.session_state.start_time = saved_data.get("start_time") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     st.session_state.is_finished = False
                     st.session_state.pre_test_done = saved_data.get("pre_test_done", False)
                     st.session_state.task_started = saved_data.get("task_started", False)
-
-                    st.success(f"成功恢复编号 {login_id} 的进度！")
+                    st.session_state.last_agent_reply = next(
+                        (m.get("content", "") for m in reversed(st.session_state.messages) if m.get("role") == "assistant"), ""
+                    )
+                    st.session_state.search_prev_query = ""
+                    st.session_state.search_active_query = ""
+                    st.success(f"成功恢复编号 {safe_login_id} 的进度！")
                     st.session_state.is_logged_in = True
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
             else:
                 st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
                 st.session_state.logs = []
                 st.session_state.editor_text = ""
+                st.session_state.editor_prev_text = ""
+                st.session_state.temp_editor = ""
                 st.session_state.final_text = ""
+                st.session_state.last_agent_reply = ""
                 st.session_state.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 st.session_state.is_finished = False
                 st.session_state.pre_test_done = False
                 st.session_state.task_started = False
-                save_data(login_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False, False, False)
+                st.session_state.search_prev_query = ""
+                st.session_state.search_active_query = ""
+                save_data(safe_login_id, st.session_state.messages, st.session_state.logs, st.session_state.editor_text, st.session_state.start_time, st.session_state.final_text, False, False, False)
                 st.success("新实验已开启！请先完成前测问卷。")
                 st.session_state.is_logged_in = True
-                time.sleep(1)
+                time.sleep(0.5)
                 st.rerun()
-        else:
-            st.warning("请输入编号！")
 
 # ================= 9. 主界面 =================
 else:
@@ -438,21 +816,7 @@ else:
         disabled_flag = st.session_state.is_generating  
         st.title("实验Agent")
 
-        components.html("""
-        <script>
-        window.parent.document.addEventListener('scroll', function() {
-            let now = new Date().getTime();
-            if (!window.lastScrollTime || now - window.lastScrollTime > 3000) {
-                window.lastScrollTime = now;
-                let iframe = window.parent.document.createElement('iframe');
-                iframe.style.display = 'none';
-                iframe.src = '/?scroll_event=true';
-                window.parent.document.body.appendChild(iframe);
-                setTimeout(() => iframe.remove(), 1000);
-            }
-        }, true);
-        </script>
-        """, height=0)
+        # 已移除无效的隐藏 iframe 滚动监听，避免额外请求和重复加载。
 
         with st.expander("📋 点击展开/收起：实验任务背景说明", expanded=True):
             st.markdown(TASK_INSTRUCTION_HTML, unsafe_allow_html=True)
@@ -484,91 +848,127 @@ else:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            if not st.session_state.is_generating:
+            # 若上一条提问未获得回复，暂不开放新输入，避免对话历史出现连续未回复消息。
+            has_pending_user = bool(
+                st.session_state.messages and st.session_state.messages[-1].get("role") == "user"
+            )
+
+            if not st.session_state.is_generating and not has_pending_user:
                 if prompt := st.chat_input("请输入指令..."):
-                    st.session_state.is_generating = True
-                    turn = (len(st.session_state.messages) // 2) + 1
+                    turn = count_user_turns(st.session_state.messages) + 1
                     keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
                     has_questioning = any(kw in prompt for kw in keywords)
-                    
                     v_hit, v_cues = detect_validity_inquiry(prompt)
                     log_event("chat", "chat_user_message",
                               {"content": prompt, "is_questioning": has_questioning,
                                "validity_inquiry": v_hit, "validity_cues": v_cues, "length": len(prompt)},
                               page="AI 对话交互区", turn=turn, detection_method="callback")
-                    
+
                     st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.session_state.is_generating = True
+                    st.session_state.pending_error = False
+                    # 先保存用户提问；即使随后网络中断，刷新页面后也能恢复并重试。
+                    save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                              st.session_state.editor_text, st.session_state.start_time,
+                              st.session_state.final_text, st.session_state.is_finished,
+                              st.session_state.pre_test_done, st.session_state.task_started)
                     st.rerun()
 
             if st.session_state.is_generating:
-                last_user_msg = st.session_state.messages[-1]["content"]
-                with st.chat_message("assistant"):
-                    turn = (len(st.session_state.messages) // 2) + 1
-                    # 文献真实性追问拦截：命中即返回统一免责话术，确保所有被试得到一致回复
-                    validity_hit, validity_cues = detect_validity_inquiry(last_user_msg)
-                    if validity_hit and INTERCEPT_VALIDITY_QUERY:
-                        with st.spinner("智能体正在思考，请稍候..."):
-                            st.markdown(AI_DISCLAIMER_REPLY)
-                        log_event("chat", "chat_validity_interception",
-                                  {"query": last_user_msg[:300], "match_cues": validity_cues,
-                                   "reply": AI_DISCLAIMER_REPLY, "intercepted_before_model": True},
-                                  page="AI 对话交互区", turn=turn, detection_method="keyword")
-                        st.session_state.messages.append({"role": "assistant", "content": AI_DISCLAIMER_REPLY})
-                        st.session_state.last_agent_reply = AI_DISCLAIMER_REPLY
-                        st.session_state.is_generating = False
-                        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
-                                  st.session_state.editor_text, st.session_state.start_time,
-                                  st.session_state.final_text, st.session_state.is_finished,
-                                  st.session_state.pre_test_done, st.session_state.task_started)
-                        st.rerun()
-                    if client is None:
-                        st.error("未检测到 DEEPSEEK_API_KEY 配置，无法调用模型。请联系管理员在 .streamlit/secrets.toml 或环境变量中配置后重试。")
-                        st.session_state.is_generating = False
-                        st.stop()
-                    with st.spinner("智能体正在思考，请稍候..."):
-                        try:
-                            api_messages = st.session_state.messages
-                            response = client.chat.completions.create(
-                                model="deepseek-chat", messages=api_messages,
-                                temperature=0.4, max_tokens=1500, timeout=30
-                            )
-                            reply_raw = response.choices[0].message.content
-                            
-                            # 强制防拆台
-                            reply_raw = check_and_fix_denial(reply_raw)
-                            
-                            turn = (len(st.session_state.messages) // 2) + 1
-                            reply, injected_meta = inject_preset_literature(reply_raw, turn, user_prompt=last_user_msg)
+                last_user_msg = st.session_state.messages[-1].get("content", "")
+                turn = count_user_turns(st.session_state.messages)
+                validity_hit, validity_cues = detect_validity_inquiry(last_user_msg)
 
-                            # 非拦截模式下：模型已作答但未给出免责说明时，追加标准提示
-                            if validity_hit and not INTERCEPT_VALIDITY_QUERY:
-                                if "AI 生成" not in reply and "AI生成" not in reply:
-                                    reply = reply.rstrip() + "\n\n---\n" + AI_DISCLAIMER_REPLY
-                            # 只要回复里出现了文献条目且属真实性相关轮次，确保尾部带免责提示
-                            if re.search(r"^\s*\d+[\.、]", reply, flags=re.M) and "AI 生成" not in reply and "AI生成" not in reply:
-                                reply = reply.rstrip() + "\n\n（提示：以上内容由 AI 生成，请您进一步核对后再引用。）"
-                            
-                            log_event("chat", "chat_agent_reply",
-                                      {"content": reply, "has_preset": len(injected_meta) > 0, "injected_meta": injected_meta},
-                                      page="AI 对话交互区", turn=turn, detection_method="callback")
-                            
-                            st.session_state.messages.append({"role": "assistant", "content": reply})
-                            st.session_state.last_agent_reply = reply
-                            st.session_state.is_generating = False  
-                            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
-                                      st.session_state.editor_text, st.session_state.start_time,
-                                      st.session_state.final_text, st.session_state.is_finished,
-                                      st.session_state.pre_test_done, st.session_state.task_started)
-                            st.rerun()
-                        except Exception as e:
-                            log_event("chat", "chat_retry", {"error": str(e)[:100]},
-                                      page="AI 对话交互区", turn=turn, detection_method="callback")
-                            st.error(f"网络波动，请重试。错误信息：{str(e)[:50]}")
-                            st.session_state.is_generating = False
-                            st.rerun()
+                with st.chat_message("assistant"):
+                    if client is None:
+                        st.error("未检测到 DEEPSEEK_API_KEY 配置，暂时无法调用模型。请联系管理员配置后，点击“重试上一条提问”。")
+                        st.session_state.is_generating = False
+                        st.session_state.pending_error = True
+                    else:
+                        with st.spinner("智能体正在思考，请稍候..."):
+                            try:
+                                references, reference_search_error = build_reference_mix(
+                                    last_user_msg, st.session_state.exp_id, turn
+                                )
+                                reference_context = build_reference_context(references)
+                                api_messages = build_api_messages(st.session_state.messages, reference_context)
+
+                                response = client.chat.completions.create(
+                                    model="deepseek-chat",
+                                    messages=api_messages,
+                                    temperature=0.55,
+                                    max_tokens=2000,
+                                    timeout=75
+                                )
+                                if not response.choices:
+                                    raise RuntimeError("模型未返回有效内容，请重试。")
+                                reply_raw = response.choices[0].message.content or ""
+                                if not reply_raw.strip():
+                                    raise RuntimeError("模型返回了空内容，请重试。")
+
+                                reply = attach_reference_list(reply_raw, references)
+                                reply = append_validity_note(reply, validity_hit)
+
+                                if references:
+                                    real_count = sum(1 for item in references if item.get("kind") == "real")
+                                    fake_count = sum(1 for item in references if item.get("kind") == "fake")
+                                    log_event(
+                                        "reference", "reference_mix_generated",
+                                        {
+                                            "turn": turn,
+                                            "total_count": len(references),
+                                            "real_count": real_count,
+                                            "fake_count": fake_count,
+                                            "references": [
+                                                {
+                                                    "number": item["number"],
+                                                    "marker": item["marker"],
+                                                    "kind": item["kind"],
+                                                    "title": item["title"]
+                                                }
+                                                for item in references
+                                            ],
+                                            "openalex_search_warning": reference_search_error
+                                        },
+                                        page="AI 对话交互区", turn=turn, detection_method="system"
+                                    )
+
+                                log_event("chat", "chat_agent_reply",
+                                          {
+                                              "content": reply,
+                                              "has_mixed_references": bool(references),
+                                              "reference_count": len(references),
+                                              "validity_inquiry": validity_hit
+                                          },
+                                          page="AI 对话交互区", turn=turn, detection_method="callback")
+
+                                st.session_state.messages.append({"role": "assistant", "content": reply})
+                                st.session_state.last_agent_reply = reply
+                                st.session_state.is_generating = False
+                                st.session_state.pending_error = False
+                                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                                          st.session_state.editor_text, st.session_state.start_time,
+                                          st.session_state.final_text, st.session_state.is_finished,
+                                          st.session_state.pre_test_done, st.session_state.task_started)
+                                st.rerun()
+
+                            except Exception as e:
+                                log_event("chat", "chat_retry",
+                                          {"error": str(e)[:180], "retry_available": True},
+                                          page="AI 对话交互区", turn=turn, detection_method="callback")
+                                st.error(f"本次请求未成功：{str(e)[:120]}。提问已保留，可点击上方按钮重试。")
+                                st.session_state.is_generating = False
+                                st.session_state.pending_error = True
 
             if not st.session_state.is_generating:
-                st.info("💡 **系统提示**：以上内容由 AI 生成。若需验证文献真实性，请点击左侧按钮前往 **🔍 学术文献查阅区**。")
+                if st.session_state.messages and st.session_state.messages[-1].get("role") == "user":
+                    st.warning("上一条提问尚未获得回复。网络恢复后可重试该提问。")
+                    if st.button("🔄 重试上一条提问", key="retry_last_chat_request"):
+                        st.session_state.is_generating = True
+                        st.session_state.pending_error = False
+                        st.rerun()
+                else:
+                    st.info("💡 **系统提示**：以上内容由 AI 生成。涉及文献时，可通过左侧 **🔍 学术文献查阅区** 进一步检索核对。")
 
         # 模块二：本地文档编辑区
         elif st.session_state.current_tab == "本地文档编辑区":
@@ -578,7 +978,7 @@ else:
             def update_editor():
                 if disabled_flag: return
                 new_text = st.session_state.temp_editor
-                old_text = st.session_state.editor_prev_text or ""
+                old_text = st.session_state.get("editor_prev_text", st.session_state.get("editor_text", "")) or ""
                 char_num = len(new_text.replace(" ", "").replace("\n", ""))
                 
                 try:
@@ -662,7 +1062,7 @@ else:
                           {"query": search_query, "preset_hits": hits},
                           page="学术文献查阅区", detection_method="callback")
                 for m in hits:
-                    log_event("preset", "preset_verified",
+                    log_event("preset", "preset_search_hit",
                               {"marker": m, "query": search_query},
                               page="学术文献查阅区", related_marker=m, detection_method="diff")
                 st.session_state["search_active_query"] = search_query
@@ -676,12 +1076,11 @@ else:
             show_results = bool(search_query) and st.session_state.get("search_active_query") == search_query
             if show_results:
                 hits = find_preset_markers_in_text(search_query)
-                st.markdown("### 🌐 百度学术检索结果")
+                st.markdown("### 🌐 百度学术检索")
                 encoded_query = urllib.parse.quote(search_query)
                 baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
-                st.components.v1.iframe(baidu_url, height=500, scrolling=True)
-
-                if st.button("👉 若上方网页未加载，请点击此处跳转百度学术核实", use_container_width=True):
+                st.markdown(f"[👉 在新页面打开百度学术检索结果]({baidu_url})")
+                if st.button("我已打开百度学术并查阅", use_container_width=True, key="confirm_baidu_opened"):
                     log_event("ai_search", "search_click_external",
                               {"target": "baidu_xueshu", "url": baidu_url},
                               page="学术文献查阅区", detection_method="callback")
@@ -695,34 +1094,34 @@ else:
                 st.markdown("---")
                 st.markdown("### 🌍 OpenAlex 国际学术库")
                 with st.spinner("正在检索国际学术数据库..."):
-                    try:
-                        resp = requests.get(
-                            "https://api.openalex.org/works",
-                            params={"search": search_query, "per-page": 5,
-                                    "page": st.session_state.get("openalex_page", 1),
-                                    "select": "display_name,publication_year,authorships,primary_location,doi",
-                                    "api_key": "ZN6iRrep1uN1v2FimduMEC"},
-                            timeout=20
-                        )
-                        data = resp.json()
-                        results = data.get("results", [])
-                        if not results:
-                            st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。")
-                        else:
-                            st.success(f"找到 {data['meta']['count']} 条结果：")
-                            for i, work in enumerate(results, 1):
-                                with st.expander(f"{i}. {work.get('display_name')} ({work.get('publication_year')})"):
-                                    auths_list = work.get("authorships", [])
-                                    auth_names = [a['author']['display_name'] for a in auths_list[:3] if 'author' in a and 'display_name' in a['author']]
-                                    st.markdown(f"**作者**：{', '.join(auth_names) if auth_names else '未知'}")
-                                    
-                                    journal_obj = (work.get("primary_location") or {}).get("source") or {}
-                                    st.markdown(f"**来源**：{journal_obj.get('display_name', '未知期刊')}")
-                                    
-                                    if work.get("doi"):
-                                        st.markdown(f"**DOI**：[{work['doi']}]({work['doi']})")
-                    except Exception as e:
-                        st.error(f"OpenAlex 查询失败：{str(e)[:50]}")
+                    data, search_error = fetch_openalex(
+                        search_query,
+                        page=st.session_state.get("openalex_page", 1),
+                        per_page=5
+                    )
+                    results = data.get("results", [])
+                    if search_error:
+                        st.error(f"OpenAlex 查询暂时失败：{search_error}")
+                    elif not results:
+                        st.warning(f"⚠️ OpenAlex 未找到『{search_query}』。")
+                    else:
+                        st.success(f"找到 {data.get('meta', {}).get('count', len(results))} 条结果：")
+                        for i, work in enumerate(results, 1):
+                            with st.expander(f"{i}. {work.get('display_name') or '未提供题名'} ({work.get('publication_year') or '年份未知'})"):
+                                auths_list = work.get("authorships", [])
+                                auth_names = [
+                                    (a.get("author") or {}).get("display_name")
+                                    for a in auths_list[:3]
+                                    if (a.get("author") or {}).get("display_name")
+                                ]
+                                st.markdown(f"**作者**：{', '.join(auth_names) if auth_names else '未知'}")
+
+                                journal_obj = (work.get("primary_location") or {}).get("source") or {}
+                                st.markdown(f"**来源**：{journal_obj.get('display_name', '未知来源')}")
+
+                                doi = work.get("doi")
+                                if doi:
+                                    st.markdown(f"**DOI**：[{doi}]({doi})")
 
         # 兜底分支：未匹配到任何功能页时给出提示
         else:
