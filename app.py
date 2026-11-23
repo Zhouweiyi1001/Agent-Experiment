@@ -71,6 +71,16 @@ TASK_INSTRUCTION_HTML = """
     <p style="font-size: 13px; color: #666; margin-top: 10px;">注：AIGC即人工智能生成内容，是指由智能体等人工智能工具自动生成的文本、数据、分析等内容。</p>
 </div>
 """
+# 任务要求速览：固定显示在左侧侧边栏，避免主区域滚动后看不到要求。
+TASK_QUICK_HTML = """
+<div class="task-box" style="padding:10px; margin-bottom:10px;">
+    <h4 style="margin:0 0 6px 0;">📌 任务要求速览</h4>
+    <div style="line-height:1.55;">
+    围绕「AIGC 对研究生学术研究的影响」撰写文献综述（约 800–1000 字），需包含：<br>
+    ① 综述标题；② 研究主题与意义；③ 研究脉络与代表性成果；④ 共识、不足与未来方向；⑤ 文末参考文献。
+    </div>
+</div>
+"""
 # ================= 3.1 真实文献备用库与实验用模拟文献库 =================
 # 真实文献备用库：以下条目可通过 DOI 或出版商页面检索。
 # OpenAlex 检索可用时优先补充实时检索结果；检索失败时使用本地备用条目。
@@ -220,6 +230,8 @@ def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
         "is_finished": is_finished,
         "pre_test_done": pre_test_done,
         "task_started": task_started,
+        "timer_total_seconds": get_active_elapsed_seconds(),
+        "timer_paused": bool(st.session_state.get("timer_paused", False)),
         "last_saved": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     tmp_path = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
@@ -235,14 +247,45 @@ def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
                 tmp_path.unlink()
             except OSError:
                 pass
+def _now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def _parse_dt(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
 def get_elapsed_time(start_time_str):
     if not start_time_str:
         return 0
-    try:
-        start_dt = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
-        return max(0, int((datetime.now() - start_dt).total_seconds()))
-    except (TypeError, ValueError):
+    start_dt = _parse_dt(start_time_str)
+    if not start_dt:
         return 0
+    return max(0, int((datetime.now() - start_dt).total_seconds()))
+def get_active_elapsed_seconds():
+    """累计计时：暂停期间不增长。"""
+    base = float(st.session_state.get("timer_accumulated", 0.0) or 0.0)
+    if not st.session_state.get("timer_paused", False):
+        seg = _parse_dt(st.session_state.get("timer_segment_start", ""))
+        if seg:
+            base += max(0.0, (datetime.now() - seg).total_seconds())
+    return max(0, int(base))
+def pause_timer():
+    """手动暂停计时：把当前运行片段累计进基础值，并停止增长。"""
+    if st.session_state.get("timer_paused", False):
+        return
+    seg = _parse_dt(st.session_state.get("timer_segment_start", ""))
+    base = float(st.session_state.get("timer_accumulated", 0.0) or 0.0)
+    if seg:
+        base += max(0.0, (datetime.now() - seg).total_seconds())
+    st.session_state.timer_accumulated = base
+    st.session_state.timer_segment_start = ""
+    st.session_state.timer_paused = True
+def resume_timer():
+    """继续计时：从当前时刻开启新的运行片段，暂停期间不计入。"""
+    if not st.session_state.get("timer_paused", False):
+        return
+    st.session_state.timer_paused = False
+    st.session_state.timer_segment_start = _now_str()
 # ================= 5. 统一日志函数 =================
 def log_event(category, action, detail=None, page=None, turn=None, related_marker=None, detection_method="callback"):
     if not st.session_state.get("task_started", False): return
@@ -252,7 +295,7 @@ def log_event(category, action, detail=None, page=None, turn=None, related_marke
         "session_id": st.session_state.exp_id,
         "participant_id": st.session_state.exp_id,
         "event_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
+        "elapsed_seconds": get_active_elapsed_seconds(),
         "event_category": category,
         "event_action": action,
         "event_detail": json.dumps(detail or {}, ensure_ascii=False, default=str),
@@ -643,6 +686,9 @@ if "last_agent_reply" not in st.session_state: st.session_state.last_agent_reply
 if "is_generating" not in st.session_state: st.session_state.is_generating = False
 if "pending_error" not in st.session_state: st.session_state.pending_error = False
 if "used_reference_markers" not in st.session_state: st.session_state.used_reference_markers = []
+if "timer_paused" not in st.session_state: st.session_state.timer_paused = False
+if "timer_accumulated" not in st.session_state: st.session_state.timer_accumulated = 0.0
+if "timer_segment_start" not in st.session_state: st.session_state.timer_segment_start = ""
 # ================= 8. 登录与恢复面板 =================
 if not st.session_state.is_logged_in:
     st.title("实验Agent - 登录")
@@ -675,6 +721,12 @@ if not st.session_state.is_logged_in:
                     st.session_state.temp_editor = st.session_state.editor_text
                     st.session_state.final_text = saved_data.get("final_text") or ""
                     st.session_state.start_time = saved_data.get("start_time") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    saved_total = saved_data.get("timer_total_seconds")
+                    if saved_total is None:
+                        saved_total = get_elapsed_time(st.session_state.start_time)
+                    st.session_state.timer_accumulated = float(saved_total or 0.0)
+                    st.session_state.timer_paused = bool(saved_data.get("timer_paused", False))
+                    st.session_state.timer_segment_start = "" if st.session_state.timer_paused else _now_str()
                     st.session_state.is_finished = False
                     st.session_state.pre_test_done = saved_data.get("pre_test_done", False)
                     st.session_state.task_started = saved_data.get("task_started", False)
@@ -697,6 +749,9 @@ if not st.session_state.is_logged_in:
                 st.session_state.final_text = ""
                 st.session_state.last_agent_reply = ""
                 st.session_state.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st.session_state.timer_accumulated = 0.0
+                st.session_state.timer_paused = False
+                st.session_state.timer_segment_start = _now_str()
                 st.session_state.is_finished = False
                 st.session_state.pre_test_done = False
                 st.session_state.task_started = False
@@ -718,6 +773,9 @@ else:
             st.session_state.pre_test_done = True
             st.session_state.task_started = True
             st.session_state.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.timer_accumulated = 0.0
+            st.session_state.timer_paused = False
+            st.session_state.timer_segment_start = _now_str()
             log_event("nav", "nav_task_start", {"note": "任务正式开始，行为采集起点"}, page="pre_test")
             save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
                       st.session_state.editor_text, st.session_state.start_time,
@@ -727,9 +785,29 @@ else:
     # ---------- 左侧控制面板 ----------
     with st.sidebar:
         st.markdown(f"## 👤 被试编号：{st.session_state.exp_id}")
-        elapsed_sec = get_elapsed_time(st.session_state.start_time)
+        elapsed_sec = get_active_elapsed_seconds()
         mins, secs = divmod(elapsed_sec, 60)
-        st.info(f"⏱ **任务耗时：{mins} 分 {secs} 秒**")
+        if st.session_state.get("timer_paused", False):
+            st.warning(f"⏸ 计时已暂停 · 已计时 {mins} 分 {secs} 秒")
+        else:
+            st.info(f"⏱ **任务耗时：{mins} 分 {secs} 秒**")
+        if st.button("▶ 继续计时" if st.session_state.get("timer_paused", False) else "⏸ 暂停计时",
+                     use_container_width=True, key="timer_toggle_btn"):
+            if st.session_state.get("timer_paused", False):
+                resume_timer()
+                log_event("timer", "timer_resume", {"note": "被试手动继续计时"}, page="sidebar")
+            else:
+                pause_timer()
+                log_event("timer", "timer_pause", {"note": "被试手动暂停计时"}, page="sidebar")
+            save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                      st.session_state.editor_text, st.session_state.start_time,
+                      st.session_state.final_text, st.session_state.is_finished,
+                      st.session_state.pre_test_done, st.session_state.task_started)
+            st.rerun()
+        st.markdown("---")
+        st.markdown(TASK_QUICK_HTML, unsafe_allow_html=True)
+        with st.expander("展开完整任务背景说明", expanded=False):
+            st.markdown(TASK_INSTRUCTION_HTML, unsafe_allow_html=True)
         st.markdown("---")
         st.markdown("### 🧭 导航菜单")
         
@@ -762,7 +840,7 @@ else:
                         "session_id": st.session_state.exp_id,
                         "participant_id": st.session_state.exp_id,
                         "event_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "elapsed_seconds": get_elapsed_time(st.session_state.start_time),
+                        "elapsed_seconds": get_active_elapsed_seconds(),
                         "event_category": "final",
                         "event_action": "final_text_saved",
                         "event_detail": json.dumps({"content": st.session_state.final_text}, ensure_ascii=False),
@@ -806,9 +884,8 @@ else:
     else:
         disabled_flag = st.session_state.is_generating  
         st.title("实验Agent")
-        # 已移除无效的隐藏 iframe 滚动监听，避免额外请求和重复加载。
-        with st.expander("📋 点击展开/收起：实验任务背景说明", expanded=True):
-            st.markdown(TASK_INSTRUCTION_HTML, unsafe_allow_html=True)
+        # 任务背景说明已移至左侧固定侧边栏，避免主区域滚动后看不到要求。
+        st.caption("📋 任务要求见左侧「任务要求」面板，可展开查看完整背景说明。")
         
         st.markdown("---")
         def record_tab_switch(tab_name):
