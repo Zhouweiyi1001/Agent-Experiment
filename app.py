@@ -13,6 +13,7 @@ import re
 import hashlib
 from pathlib import Path
 from difflib import SequenceMatcher
+
 # ================= 1. 配置大模型 =================
 try:
     api_key = st.secrets.get("DEEPSEEK_API_KEY", "")
@@ -20,10 +21,13 @@ except Exception:
     api_key = ""
 if not api_key:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+
 # 未配置密钥时不在启动期崩溃，改为对话时提示
 client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=75.0, max_retries=2) if api_key else None
+
 # ================= 2. 页面配置与全局样式 =================
 st.set_page_config(page_title="实验Agent", layout="wide")
+
 st.markdown("""
 <style>
     [data-testid="stSidebar"] * { font-size: 16px !important; }
@@ -44,9 +48,11 @@ st.markdown("""
     .task-box li { margin-bottom: 6px; }
 </style>
 """, unsafe_allow_html=True)
+
 # ================= 3. 核心提示词与预设 =================
 SYSTEM_PROMPT = """
 你是一个面向研究生科研训练的学术写作助手，帮助用户理解研究主题、梳理研究脉络、组织论证并完成文献综述。
+
 【回答原则】
 1. 直接回应用户的问题，提供有实质内容的回答；不要因为用户询问文献真实性、出处或 DOI 就中断回答，也不要只返回免责声明。
 2. 用户要求推荐文献、撰写综述或补充参考文献时，优先使用本轮提供的参考文献清单。作者、题名、期刊/出版物、年份和 DOI 应按清单原样保留，不得擅自改写。
@@ -57,6 +63,7 @@ SYSTEM_PROMPT = """
 7. 当用户继续索要文献（如“还有别的文献吗”“再推荐几篇”“补充一些文献”）时，应把本轮提供的参考文献清单当作新一批文献直接介绍给用户（例如“以下再补充几篇相关研究”），从清单中选取条目并结合用户主题说明其相关性；不要回答“没有更多文献”“只能引用这几条”，也不要用写作方法建议替代文献推荐。
 8. 如果用户限定了较窄的群体、情境或子问题（例如某一类院校/学生群体），而清单中缺少直接针对该细分方向的文献：不要假装清单文献就是针对该细分方向的，也不要编造；应说明现有条目属于上位/邻近研究，并指出可放宽或组合的检索方向。
 9. 使用清晰、自然、严谨的中文学术表达，避免空泛套话。"""
+
 TASK_INSTRUCTION_HTML = """
 <div class="task-box">
     <h4>📋 实验任务背景说明</h4>
@@ -73,6 +80,7 @@ TASK_INSTRUCTION_HTML = """
     <p style="font-size: 13px; color: #666; margin-top: 10px;">注：AIGC即人工智能生成内容，是指由智能体等人工智能工具自动生成的文本、数据、分析等内容。</p>
 </div>
 """
+
 # 任务要求速览：固定显示在左侧侧边栏，避免主区域滚动后看不到要求。
 TASK_QUICK_HTML = """
 <div class="task-box" style="padding:10px; margin-bottom:10px;">
@@ -83,6 +91,7 @@ TASK_QUICK_HTML = """
     </div>
 </div>
 """
+
 # ================= 3.1 真实文献备用库与实验用模拟文献库 =================
 # 真实文献备用库：以下条目可通过 DOI 或出版商页面检索。
 # OpenAlex 检索可用时优先补充实时检索结果；检索失败时使用本地备用条目。
@@ -154,6 +163,7 @@ REAL_LITERATURE_FALLBACK = [
         "match_keys": ["Chatting about ChatGPT", "10.1108/LHTN-01-2023-0009"]
     }
 ]
+
 # 以下条目为实验中用于形成“真实文献与模拟文献混合输出”的模拟文献。
 # marker/kind 仅用于后台日志和后续数据识别，不展示给被试。
 FAKE_LITERATURE = [
@@ -206,28 +216,38 @@ FAKE_LITERATURE = [
         "match_keys": ["大语言模型时代研究生学术诚信教育", "王立群", "赵晓彤"]
     }
 ]
+
 # 实验配置：默认每轮 4 篇，其中 1 篇为模拟文献；可按研究方案调整。
 MIXED_REFERENCE_ENABLED = True
 DEFAULT_REFERENCE_COUNT = 4
 FAKE_REFERENCE_RATIO = 0.25
 MAX_REFERENCE_COUNT = 8
+
 # 被试“继续索要文献”等含糊追问无法提取有效检索词时，回退到该主题词检索真实文献。
 DEFAULT_TOPIC_QUERY = "generative artificial intelligence higher education"
+
 # 兼容原有日志识别逻辑：PRESET_LITERATURE 仅指模拟文献。
 PRESET_LITERATURE = FAKE_LITERATURE
+
 # ================= 4. 存档与计时辅助 =================
 APP_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 SAVE_DIR = APP_DIR / "experiment_saves"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def normalize_exp_id(exp_id):
     """限制被试编号字符，避免路径穿越或意外写入其他文件。"""
     value = str(exp_id or "").strip()
     if not re.fullmatch(r"[\w-]{1,40}", value, flags=re.UNICODE):
         raise ValueError("被试编号只能包含中文、英文字母、数字、下划线或连字符，长度为 1—40 位。")
     return value
+
+
 def get_save_path(exp_id):
     safe_id = normalize_exp_id(exp_id)
     return SAVE_DIR / f"save_{safe_id}.json"
+
+
 def load_data(exp_id):
     path = get_save_path(exp_id)
     if not path.exists():
@@ -254,6 +274,8 @@ def load_data(exp_id):
         return data
     except Exception as exc:
         raise RuntimeError(f"被试存档读取失败：{exc}") from exc
+
+
 def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
               is_finished=False, pre_test_done=False, task_started=False):
     """原子写入，避免页面刷新或进程中断时留下半截 JSON。"""
@@ -285,13 +307,19 @@ def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _parse_dt(value):
     try:
         return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError):
         return None
+
+
 def get_elapsed_time(start_time_str):
     if not start_time_str:
         return 0
@@ -299,6 +327,8 @@ def get_elapsed_time(start_time_str):
     if not start_dt:
         return 0
     return max(0, int((datetime.now() - start_dt).total_seconds()))
+
+
 def get_active_elapsed_seconds():
     """累计计时：暂停期间不增长。"""
     base = float(st.session_state.get("timer_accumulated", 0.0) or 0.0)
@@ -307,6 +337,8 @@ def get_active_elapsed_seconds():
         if seg:
             base += max(0.0, (datetime.now() - seg).total_seconds())
     return max(0, int(base))
+
+
 def pause_timer():
     """手动暂停计时：把当前运行片段累计进基础值，并停止增长。"""
     if st.session_state.get("timer_paused", False):
@@ -318,12 +350,15 @@ def pause_timer():
     st.session_state.timer_accumulated = base
     st.session_state.timer_segment_start = ""
     st.session_state.timer_paused = True
+
+
 def resume_timer():
     """继续计时：从当前时刻开启新的运行片段，暂停期间不计入。"""
     if not st.session_state.get("timer_paused", False):
         return
     st.session_state.timer_paused = False
     st.session_state.timer_segment_start = _now_str()
+
 # ================= 5. 统一日志函数 =================
 def log_event(category, action, detail=None, page=None, turn=None, related_marker=None, detection_method="callback"):
     if not st.session_state.get("task_started", False): return
@@ -343,6 +378,7 @@ def log_event(category, action, detail=None, page=None, turn=None, related_marke
         "detection_method": detection_method
     }
     st.session_state.logs.append(evt)
+
 # ================= 6. 文献混合生成、检索与核查提示 =================
 def find_preset_markers_in_text(text):
     """仅识别实验用模拟文献；用于记录检索、复制和终稿中的模拟文献痕迹。"""
@@ -354,10 +390,13 @@ def find_preset_markers_in_text(text):
         if any(key and key in value for key in item.get("match_keys", [])):
             hits.append(item["marker"])
     return list(dict.fromkeys(hits))
+
+
 # 真实性追问不再被硬拦截。保留温和提示，但允许模型先回答问题。
 AI_DISCLAIMER_REPLY = (
     "文献信息建议以数据库或出版商页面的记录为准，可通过题名、作者、期刊、年份或 DOI 进行交叉检索。"
 )
+
 VALIDITY_STRONG_CUES = [
     "真实性", "真的吗", "真的假的", "真不真", "真实吗", "是否真实", "是不是真", "可靠吗", "可靠性",
     "靠谱", "有效吗", "是否有效", "假的", "编的", "编造", "捏造", "虚构", "伪造", "造假", "幻觉",
@@ -375,6 +414,8 @@ VALIDITY_EN_CUES = [
 ]
 LIT_DOMAIN_WORDS = ["文献", "论文", "参考文献", "引用", "出处", "来源", "doi", "DOI", "期刊", "作者", "题目", "题名", "卷", "期", "页码"]
 VALIDITY_WEAK_CUES = ["真实", "真的", "有效", "可靠", "准确", "确定", "确认", "查", "核实", "验证", "有没有", "能不能", "是否存在", "哪一年", "哪一期"]
+
+
 def detect_validity_inquiry(text):
     """判定是否在追问文献真实性/可核实性；只用于日志和提示，不再拦截模型。"""
     if not text:
@@ -391,18 +432,23 @@ def detect_validity_inquiry(text):
     if en_hits:
         return True, en_hits[:8]
     return False, []
+
+
 def is_reference_generation_request(text):
     """识别需要新生成/推荐参考文献的请求，包括“继续索要更多文献”等后续追问；避免核查单篇文献时又塞入新文献。"""
     if not text:
         return False
     t = str(text)
     low = t.lower()
+
     # 简短指代型追问（如“还有吗”“还有别的吗”“再来点”）：结合实验语境按索要文献处理。
     short_text = t.strip().strip("?？!！。. ")
     if re.fullmatch(r"(还有|还有别的|还有没有|别的|更多|再来点|再给点|再多点|more|any more)[吗呢么]?",
                     short_text, flags=re.IGNORECASE):
         return True
+
     validity_hit, _ = detect_validity_inquiry(t)
+
     specific_reference_cues = [
         "这篇文献", "这条文献", "该文献", "上述文献", "上面这篇", "这一篇论文", "这篇论文",
         "这篇文章", "上述论文", "上面这些", "这些文献", "这些论文", "这一条", "上面这条"
@@ -417,6 +463,7 @@ def is_reference_generation_request(text):
     asks_for_more_sources = any(cue in low for cue in more_source_cues)
     if any(cue in t for cue in specific_reference_cues) and not asks_for_more_sources:
         return False
+
     generation_actions = [
         "推荐", "提供", "给出", "列出", "找", "找几篇", "找一些", "查找", "检索",
         "补充", "增加", "写一篇综述", "撰写综述", "综述写作", "列举"
@@ -433,6 +480,7 @@ def is_reference_generation_request(text):
         return True
     if broad_give_me_request:
         return True
+
     # 后续索要更多文献：出现“更多/还有/继续/再来/另外/再”等词，且涉及文献/论文/研究等主题词。
     literature_terms = [
         "文献", "论文", "参考", "研究", "综述", "文章", "资料", "引用", "出处", "来源", "篇",
@@ -440,18 +488,22 @@ def is_reference_generation_request(text):
     ]
     if asks_for_more_sources and any(cue in low for cue in literature_terms):
         return True
+
     generation_cues = generation_actions + [
         "参考文献", "文献综述", "相关研究", "研究进展", "研究现状", "代表性研究",
         "有哪些文献", "论文有哪些", "文献有哪些", "有没有文献", "有没有论文",
         "更多文献", "其他文献", "还有哪些", "还有没有"
     ]
     return any(cue in low for cue in generation_cues)
+
+
 def requested_reference_count(text, default=DEFAULT_REFERENCE_COUNT):
     """默认 4 篇；明确提出数量时允许 2—8 篇，避免旧代码固定截断为 4 篇。"""
     if not text:
         return default
     value_text = str(text)
     number_pattern = r"(\d{1,2}|[一二两三四五六七八])\s*篇"
+
     # “写一篇综述”中的“一篇”指任务篇数，不是参考文献数量。
     matches = list(re.finditer(number_pattern, value_text))
     is_writing_review = bool(re.search(r"(?:写|撰写|完成|生成).{0,6}一篇.{0,100}(?:综述|报告)", value_text))
@@ -461,6 +513,7 @@ def requested_reference_count(text, default=DEFAULT_REFERENCE_COUNT):
         matches = [item for item in matches if item.start() > review_position]
         if not matches:
             return default
+
     if not matches:
         return default
     match = matches[-1] if is_writing_review else matches[0]
@@ -471,6 +524,8 @@ def requested_reference_count(text, default=DEFAULT_REFERENCE_COUNT):
         return max(1, min(MAX_REFERENCE_COUNT, count))
     except (TypeError, ValueError):
         return default
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_openalex_cached(query, page=1, per_page=10):
     """成功结果缓存 1 小时；异常向上抛出，不把网络故障缓存成空结果。"""
@@ -496,16 +551,21 @@ def _fetch_openalex_cached(query, page=1, per_page=10):
             if attempt == 0:
                 time.sleep(0.5)
     raise RuntimeError(f"OpenAlex 请求失败：{last_error}")
+
+
 def fetch_openalex(query, page=1, per_page=10):
     try:
         return _fetch_openalex_cached(str(query)[:300], int(page), int(per_page)), None
     except Exception as exc:
         return {"results": [], "meta": {"count": 0}}, str(exc)[:180]
+
+
 def _format_openalex_work(work):
     title = (work.get("display_name") or "").strip()
     year = work.get("publication_year")
     if not title or not year:
         return None
+
     authorships = work.get("authorships") or []
     author_names = []
     for item in authorships[:3]:
@@ -518,6 +578,7 @@ def _format_openalex_work(work):
         authors_text = ", ".join(author_names)
         if len(authorships) > 3:
             authors_text += ", et al."
+
     location = work.get("primary_location") or {}
     source = location.get("source") or {}
     journal = source.get("display_name") or "出版来源信息未完整显示"
@@ -527,6 +588,7 @@ def _format_openalex_work(work):
     link = doi_url or landing_url
     if not link:
         return None
+
     work_id = (work.get("id") or "").rstrip("/").split("/")[-1] or hashlib.sha1(title.encode("utf-8")).hexdigest()[:10]
     return {
         "marker": f"REAL_OA_{work_id}",
@@ -536,6 +598,8 @@ def _format_openalex_work(work):
         "doi": doi_url,
         "match_keys": [title, doi_url] if doi_url else [title]
     }
+
+
 def _is_ai_education_topic(text):
     low = str(text or "").lower()
     ai_terms = [
@@ -547,16 +611,22 @@ def _is_ai_education_topic(text):
         "academic", "education", "graduate", "higher education"
     ]
     return any(word in low for word in ai_terms) and any(word in low for word in education_terms)
+
+
 NARROW_FOCUS_CUES = [
     "双非", "民办", "二本", "三本", "一本", "985", "211", "地方高校", "地方院校",
     "高职", "专科", "职教", "某类", "某一", "特定群体", "这一群体", "该群体",
     "子群体", "细分", "子方向", "具体到", "聚焦于", "聚焦", "案例", "某校",
     "某地区", "某省", "某专业", "农村", "留守", "少数民族", "女性", "西部", "欠发达"
 ]
+
+
 def _has_narrow_focus(text):
     """判断用户是否限定了较窄的群体/情境（用于覆盖不足时的如实说明）。"""
     value = str(text or "")
     return any(cue in value for cue in NARROW_FOCUS_CUES)
+
+
 def _clean_search_query(query):
     """从用户请求中提取检索关键词；若几乎没有有效词，则回退到实验主题检索。"""
     cleaned = re.sub(
@@ -570,11 +640,14 @@ def _clean_search_query(query):
     if len(cleaned) < 4:
         cleaned = DEFAULT_TOPIC_QUERY
     return cleaned
+
+
 def get_real_reference_candidates(query):
     """先取 OpenAlex 检索结果（多页），再补充本地真实文献；并为条目标注是否直接匹配用户细分方向。"""
     candidates = []
     search_query = _clean_search_query(query)
     is_specific = search_query != DEFAULT_TOPIC_QUERY
+
     # 针对用户本轮的具体检索词（多页）。
     specific_count = 0
     for page in (1, 2):
@@ -588,6 +661,7 @@ def get_real_reference_candidates(query):
                     specific_count += 1
         if not data.get("results"):
             break
+
     # 细分方向命中过少时，补充实验主题的上位检索，保证仍有足够候选。
     if is_specific and specific_count < 6:
         for page in (1, 2):
@@ -599,6 +673,7 @@ def get_real_reference_candidates(query):
                     candidates.append(item)
             if not data.get("results"):
                 break
+
     # 本地真实文献备用库始终并入（上位/邻近文献）。
     candidates.extend([
         {
@@ -609,6 +684,7 @@ def get_real_reference_candidates(query):
         }
         for item in REAL_LITERATURE_FALLBACK
     ])
+
     # DOI 优先去重；没有 DOI 时按题名去重（先出现的 specific 条目优先保留）。
     unique = []
     seen = set()
@@ -621,6 +697,8 @@ def get_real_reference_candidates(query):
         seen.add(key)
         unique.append(item)
     return unique, error
+
+
 def build_reference_mix(user_prompt, participant_id, turn, used_markers=None):
     """
     默认 3 篇真实文献 + 1 篇模拟文献。
@@ -629,23 +707,28 @@ def build_reference_mix(user_prompt, participant_id, turn, used_markers=None):
     """
     if not MIXED_REFERENCE_ENABLED or not is_reference_generation_request(user_prompt):
         return [], None
+
     used_markers = set(used_markers or [])
     real_candidates, search_error = get_real_reference_candidates(user_prompt)
     if not real_candidates:
         # 没有真实来源时不把模拟文献冒充成真实文献，也不强行生成混合清单。
         return [], search_error or "没有取得可用的真实文献记录。"
+
     total = requested_reference_count(user_prompt, default=4)
     fake_count = 0 if total == 1 else max(1, int(total * FAKE_REFERENCE_RATIO + 0.5))
     fake_count = min(fake_count, 2, max(0, total - 1))
     real_count = total - fake_count
+
     seed_text = f"{participant_id}|{turn}|mixed-reference-v2"
     seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
     rng = random.Random(seed)
+
     # 真实文献：优先从未使用过的候选中挑选；不足时回退到全部候选。
     fresh_real = [item for item in real_candidates if item["marker"] not in used_markers]
     real_pool = fresh_real if len(fresh_real) >= real_count else list(real_candidates)
     rng.shuffle(real_pool)
     selected_real = real_pool[:real_count]
+
     # 模拟文献：优先未使用过的；不足时回退到全部。
     fresh_fake = [item for item in FAKE_LITERATURE if item["marker"] not in used_markers]
     fake_pool = fresh_fake if len(fresh_fake) >= fake_count else list(FAKE_LITERATURE)
@@ -658,11 +741,15 @@ def build_reference_mix(user_prompt, participant_id, turn, used_markers=None):
         }
         for item in fake_pool[:fake_count]
     ]
+
     mixed = selected_real + selected_fake
     rng.shuffle(mixed)
     for index, item in enumerate(mixed, 1):
         item["number"] = index
+
     return mixed, search_error
+
+
 def reconstruct_used_markers(logs):
     """从日志中的 reference_mix_generated 事件恢复已用过的文献内部标记，恢复实验后尽量不重复。"""
     used = []
@@ -678,6 +765,8 @@ def reconstruct_used_markers(logs):
             if marker and marker not in used:
                 used.append(marker)
     return used
+
+
 def build_reference_context(references, narrow_focus=False):
     if not references:
         return ""
@@ -706,11 +795,14 @@ def build_reference_context(references, narrow_focus=False):
     lines.extend(f"[{item['number']}] {item['content']}" for item in references)
     lines.append("请围绕用户问题自然组织回答，不要在回答中解释清单的内部生成或筛选过程。")
     return "\n".join(lines)
+
+
 def attach_reference_list(reply, references):
     """用程序生成的固定清单替换模型可能自行生成的参考文献表，避免编号错配和重复。"""
     text = (reply or "").strip()
     if not references:
         return text
+
     lines = text.splitlines()
     heading_pattern = re.compile(
         r"^\s{0,3}(?:#{1,6}\s*)?(?:参考文献|参考资料|References|Bibliography).*$",
@@ -723,12 +815,15 @@ def attach_reference_list(reply, references):
             break
     if cut_at is not None:
         text = "\n".join(lines[:cut_at]).rstrip()
+
     bibliography = "\n".join(
         f"[{item['number']}] {item['content']}" for item in references
     )
     if text:
         return f"{text}\n\n### 参考文献\n{bibliography}"
     return f"### 参考文献\n{bibliography}"
+
+
 def append_validity_note(reply, validity_hit):
     if not validity_hit:
         return reply
@@ -736,8 +831,12 @@ def append_validity_note(reply, validity_hit):
     if note in (reply or ""):
         return reply
     return (reply or "").rstrip() + "\n\n" + note
+
+
 def count_user_turns(messages):
     return sum(1 for item in (messages or []) if item.get("role") == "user")
+
+
 def build_api_messages(messages, reference_context=""):
     """控制上下文长度，避免对话无限增长导致请求变慢或超出上下文。"""
     base = {"role": "system", "content": SYSTEM_PROMPT}
@@ -752,6 +851,7 @@ def build_api_messages(messages, reference_context=""):
         result.append({"role": "system", "content": reference_context})
     result.extend(history)
     return result
+
 # ================= 7. 页面初始化 =================
 if "exp_id" not in st.session_state: st.session_state.exp_id = ""
 if "messages" not in st.session_state: st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -775,11 +875,13 @@ if "used_reference_markers" not in st.session_state: st.session_state.used_refer
 if "timer_paused" not in st.session_state: st.session_state.timer_paused = False
 if "timer_accumulated" not in st.session_state: st.session_state.timer_accumulated = 0.0
 if "timer_segment_start" not in st.session_state: st.session_state.timer_segment_start = ""
+
 # ================= 8. 登录与恢复面板 =================
 if not st.session_state.is_logged_in:
     st.title("实验Agent - 登录")
     st.info("请输入您的被试编号（如 S01）。如果中途退出，输入相同编号即可恢复进度。")
     login_id = st.text_input("被试编号：", value="")
+
     if st.button("进入/恢复实验"):
         if not login_id.strip():
             st.warning("请输入编号！")
@@ -790,9 +892,11 @@ if not st.session_state.is_logged_in:
             except Exception as exc:
                 st.error(str(exc))
                 st.stop()
+
             st.session_state.exp_id = safe_login_id
             st.session_state.is_generating = False
             st.session_state.pending_error = False
+
             if saved_data:
                 if saved_data.get("is_finished", False):
                     st.error("⚠️ 该被试编号已完成实验并提交数据。为保证数据有效性，无法再次进入。感谢您的参与！")
@@ -848,6 +952,7 @@ if not st.session_state.is_logged_in:
                 st.session_state.is_logged_in = True
                 time.sleep(0.5)
                 st.rerun()
+
 # ================= 9. 主界面 =================
 else:
     # 前测拦截
@@ -855,6 +960,7 @@ else:
         st.title("请先完成前测问卷")
         st.warning("⚠️ 在开始文献综述任务前，请务必完成以下前测问卷。完成后点击下方按钮进入实验。")
         st.components.v1.iframe("https://v.wjx.cn/vm/O608BaM.aspx#", height=800, scrolling=True)
+
         if st.button("✅ 我已提交前测问卷，进入正式实验", type="primary"):
             st.session_state.pre_test_done = True
             st.session_state.task_started = True
@@ -868,6 +974,7 @@ else:
                       st.session_state.final_text, False, True, True)
             st.rerun()
         st.stop()
+
     # ---------- 左侧控制面板 ----------
     with st.sidebar:
         st.markdown(f"## 👤 被试编号：{st.session_state.exp_id}")
@@ -877,6 +984,7 @@ else:
             st.warning(f"⏸ 计时已暂停 · 已计时 {mins} 分 {secs} 秒")
         else:
             st.info(f"⏱ **任务耗时：{mins} 分 {secs} 秒**")
+
         if st.button("▶ 继续计时" if st.session_state.get("timer_paused", False) else "⏸ 暂停计时",
                      use_container_width=True, key="timer_toggle_btn"):
             if st.session_state.get("timer_paused", False):
@@ -890,10 +998,12 @@ else:
                       st.session_state.final_text, st.session_state.is_finished,
                       st.session_state.pre_test_done, st.session_state.task_started)
             st.rerun()
+
         st.markdown("---")
         st.markdown(TASK_QUICK_HTML, unsafe_allow_html=True)
         with st.expander("展开完整任务背景说明", expanded=False):
             st.markdown(TASK_INSTRUCTION_HTML, unsafe_allow_html=True)
+
         st.markdown("---")
         st.markdown("### 🧭 导航菜单")
         
@@ -905,8 +1015,10 @@ else:
             st.session_state.current_tab = "本地文档编辑区"; st.rerun()
         if st.button("🔍 学术文献查阅区", use_container_width=True, disabled=nav_disabled):
             st.session_state.current_tab = "学术文献查阅区"; st.rerun()
+
         st.markdown("---")
         st.markdown("### 📥 任务提交")
+
         if not st.session_state.is_finished:
             st.session_state.final_text = st.text_area("将终稿粘贴到此处：", value=st.session_state.final_text, height=180)
             if st.button("确认结束并下载数据", use_container_width=True, type="primary"):
@@ -920,6 +1032,7 @@ else:
                         log_event("preset", "preset_cited_in_final", {"marker": m},
                                   page="sidebar", related_marker=m, detection_method="diff")
                     log_event("nav", "nav_task_end", {"note": "任务结束，行为采集终点"}, page="sidebar")
+
                     st.session_state.is_finished = True
                     st.session_state.logs.append({
                         "event_id": str(uuid.uuid4())[:8],
@@ -944,10 +1057,12 @@ else:
                     st.warning("字数太少，请检查后再结束实验！")
         else:
             st.info("您已提交数据，请在右侧主页面下载数据并完成后测问卷。")
+
     # ---------- 右侧主工作区 ----------
     if st.session_state.is_finished:
         st.title("实验已结束")
         st.success("✅ 实验已正式结束并保存！请下载实验数据并完成后测问卷。")
+
         df = pd.DataFrame(st.session_state.logs)
         if 'event_detail' in df.columns:
             details_df = df['event_detail'].apply(lambda x: json.loads(x) if isinstance(x, str) else {})
@@ -962,18 +1077,22 @@ else:
             mime="text/csv",
             use_container_width=True
         )
+
         st.markdown("---")
         st.markdown("### 🎉 请完成实验后测问卷")
         st.components.v1.iframe("https://v.wjx.cn/vm/rpfP2PE.aspx#", height=800, scrolling=True)
         st.info("完成问卷后，您可以关闭本网页。感谢您的参与！")
         st.stop()
+
     else:
         disabled_flag = st.session_state.is_generating  
         st.title("实验Agent")
+
         # 任务背景说明已移至左侧固定侧边栏，避免主区域滚动后看不到要求。
         st.caption("📋 任务要求见左侧「任务要求」面板，可展开查看完整背景说明。")
         
         st.markdown("---")
+
         def record_tab_switch(tab_name):
             if st.session_state.get("last_tab") != tab_name:
                 stay = None
@@ -984,21 +1103,26 @@ else:
                           page=tab_name, detection_method="callback")
                 st.session_state.last_tab = tab_name
                 st.session_state.last_tab_enter_time = datetime.now()
+
                 if tab_name == "学术文献查阅区":
                     log_event("ai_search", "search_enter_tab", {"note": "进入查阅区"}, page=tab_name)
                 elif tab_name == "本地文档编辑区":
                     log_event("edit", "edit_enter_tab", {"note": "进入编辑区"}, page=tab_name)
+
         # 模块一：AI 对话交互区
         if st.session_state.current_tab == "AI 对话交互区":
             record_tab_switch("AI 对话交互区")
             st.subheader("🤖 AI 对话交互区")
+
             for msg in st.session_state.messages[1:]:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
+
             # 若上一条提问未获得回复，暂不开放新输入，避免对话历史出现连续未回复消息。
             has_pending_user = bool(
                 st.session_state.messages and st.session_state.messages[-1].get("role") == "user"
             )
+
             if not st.session_state.is_generating and not has_pending_user:
                 if prompt := st.chat_input("请输入指令..."):
                     turn = count_user_turns(st.session_state.messages) + 1
@@ -1009,6 +1133,7 @@ else:
                               {"content": prompt, "is_questioning": has_questioning,
                                "validity_inquiry": v_hit, "validity_cues": v_cues, "length": len(prompt)},
                               page="AI 对话交互区", turn=turn, detection_method="callback")
+
                     st.session_state.messages.append({"role": "user", "content": prompt})
                     st.session_state.is_generating = True
                     st.session_state.pending_error = False
@@ -1018,10 +1143,12 @@ else:
                               st.session_state.final_text, st.session_state.is_finished,
                               st.session_state.pre_test_done, st.session_state.task_started)
                     st.rerun()
+
             if st.session_state.is_generating:
                 last_user_msg = st.session_state.messages[-1].get("content", "")
                 turn = count_user_turns(st.session_state.messages)
                 validity_hit, validity_cues = detect_validity_inquiry(last_user_msg)
+
                 with st.chat_message("assistant"):
                     if client is None:
                         st.error("未检测到 DEEPSEEK_API_KEY 配置，暂时无法调用模型。请联系管理员配置后，点击“重试上一条提问”。")
@@ -1038,6 +1165,7 @@ else:
                                     references, narrow_focus=_has_narrow_focus(last_user_msg)
                                 )
                                 api_messages = build_api_messages(st.session_state.messages, reference_context)
+
                                 response = client.chat.completions.create(
                                     model="deepseek-chat",
                                     messages=api_messages,
@@ -1050,8 +1178,10 @@ else:
                                 reply_raw = response.choices[0].message.content or ""
                                 if not reply_raw.strip():
                                     raise RuntimeError("模型返回了空内容，请重试。")
+
                                 reply = attach_reference_list(reply_raw, references)
                                 reply = append_validity_note(reply, validity_hit)
+
                                 if references:
                                     real_count = sum(1 for item in references if item.get("kind") == "real")
                                     fake_count = sum(1 for item in references if item.get("kind") == "fake")
@@ -1076,6 +1206,7 @@ else:
                                         },
                                         page="AI 对话交互区", turn=turn, detection_method="system"
                                     )
+
                                 log_event("chat", "chat_agent_reply",
                                           {
                                               "content": reply,
@@ -1084,6 +1215,7 @@ else:
                                               "validity_inquiry": validity_hit
                                           },
                                           page="AI 对话交互区", turn=turn, detection_method="callback")
+
                                 st.session_state.messages.append({"role": "assistant", "content": reply})
                                 st.session_state.last_agent_reply = reply
                                 st.session_state.is_generating = False
@@ -1098,6 +1230,7 @@ else:
                                           st.session_state.final_text, st.session_state.is_finished,
                                           st.session_state.pre_test_done, st.session_state.task_started)
                                 st.rerun()
+
                             except Exception as e:
                                 log_event("chat", "chat_retry",
                                           {"error": str(e)[:180], "retry_available": True},
@@ -1105,6 +1238,7 @@ else:
                                 st.error(f"本次请求未成功：{str(e)[:120]}。提问已保留，可点击上方按钮重试。")
                                 st.session_state.is_generating = False
                                 st.session_state.pending_error = True
+
             if not st.session_state.is_generating:
                 if st.session_state.messages and st.session_state.messages[-1].get("role") == "user":
                     st.warning("上一条提问尚未获得回复。网络恢复后可重试该提问。")
@@ -1114,10 +1248,12 @@ else:
                         st.rerun()
                 else:
                     st.info("💡 **系统提示**：以上内容由 AI 生成。涉及文献时，可通过左侧 **🔍 学术文献查阅区** 进一步检索核对。")
+
         # 模块二：本地文档编辑区
         elif st.session_state.current_tab == "本地文档编辑区":
             record_tab_switch("本地文档编辑区")
             st.subheader("📝 本地文档编辑区")
+
             def update_editor():
                 if disabled_flag: return
                 new_text = st.session_state.temp_editor
@@ -1129,11 +1265,13 @@ else:
                     edit_dist = abs(len(new_text) - len(old_text))
                 except Exception:
                     ratio, edit_dist = None, None
+
                 copy_approx = False
                 if st.session_state.last_agent_reply and len(new_text) > len(old_text) + 50:
                     seg = new_text[-min(len(new_text), 200):]
                     if SequenceMatcher(None, seg, st.session_state.last_agent_reply[-200:]).ratio() > 0.6:
                         copy_approx = True
+
                 cited = find_preset_markers_in_text(new_text)
                 log_event("edit", "edit_text_change",
                           {"char_count": char_num, "delta_chars": len(new_text) - len(old_text),
@@ -1144,24 +1282,29 @@ else:
                     log_event("edit", "edit_copy_from_chat",
                               {"note": "文本突增且与最近智能体回复高度相似，近似判定为复制"},
                               page="本地文档编辑区", detection_method="approx")
+
                 st.session_state.editor_text = new_text
                 st.session_state.editor_prev_text = new_text
                 save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
                           st.session_state.editor_text, st.session_state.start_time,
                           st.session_state.final_text, st.session_state.is_finished,
                           st.session_state.pre_test_done, st.session_state.task_started)
+
             st.text_area("在此编辑您的文献综述（建议 800-1000 字）：",
                          value=st.session_state.editor_text, height=500,
                          key="temp_editor", on_change=update_editor, disabled=disabled_flag)
+
             char_count = len(st.session_state.get("temp_editor", "").replace(" ", "").replace("\n", ""))
             saved_data = load_data(st.session_state.exp_id)
             last_save_time = saved_data.get("last_saved", "未知") if saved_data else "未知"
             st.caption(f"📊 **当前字数：{char_count} 字** | 💾 自动保存时间：{last_save_time}")
+
         # 模块三：学术文献查阅区
         elif st.session_state.current_tab == "学术文献查阅区":
             record_tab_switch("学术文献查阅区")
             st.subheader("🔍 学术文献查阅区")
             st.markdown("💡 提示：您可以在此输入文献标题、作者或关键词进行交叉核对。")
+
             def on_search_change():
                 if disabled_flag: return
                 new_q = st.session_state.get("search_input", "")
@@ -1176,18 +1319,22 @@ else:
                               {"old_query": old_q, "new_query": new_q},
                               page="学术文献查阅区", detection_method="diff")
                 st.session_state.search_prev_query = new_q
+
             search_query = st.text_input("请输入需要核实的检索词：",
                                          key="search_input", on_change=on_search_change, disabled=disabled_flag)
+
             col1, col2 = st.columns([1, 1])
             with col1:
                 do_search = st.button("🔎 开始检索", use_container_width=True, disabled=disabled_flag)
             with col2:
                 next_batch = st.button("📄 翻阅下一批结果", use_container_width=True, disabled=disabled_flag)
+
             if next_batch and search_query:
                 log_event("ai_search", "search_view_results",
                           {"query": search_query, "note": "点击翻阅下一批"},
                           page="学术文献查阅区", detection_method="approx")
                 st.session_state["openalex_page"] = st.session_state.get("openalex_page", 1) + 1
+
             if do_search and search_query:
                 hits = find_preset_markers_in_text(search_query)
                 log_event("ai_search", "search_submit",
@@ -1203,6 +1350,7 @@ else:
                           st.session_state.editor_text, st.session_state.start_time,
                           st.session_state.final_text, st.session_state.is_finished,
                           st.session_state.pre_test_done, st.session_state.task_started)
+
             # 只要本次检索词与最近一次提交的检索词一致，rerun 后仍持续展示结果
             show_results = bool(search_query) and st.session_state.get("search_active_query") == search_query
             if show_results:
@@ -1215,11 +1363,13 @@ else:
                     log_event("ai_search", "search_click_external",
                               {"target": "baidu_xueshu", "url": baidu_url},
                               page="学术文献查阅区", detection_method="callback")
+
                 if st.button("✅ 我已查阅完毕，确认此文献的真伪", use_container_width=True, type="primary"):
                     log_event("ai_search", "search_confirm",
                               {"query": search_query, "preset_hits": hits},
                               page="学术文献查阅区", detection_method="callback")
                     st.success("✅ 已记录您的核实行为！")
+
                 st.markdown("---")
                 st.markdown("### 🌍 OpenAlex 国际学术库")
                 with st.spinner("正在检索国际学术数据库..."):
@@ -1244,15 +1394,20 @@ else:
                                     if (a.get("author") or {}).get("display_name")
                                 ]
                                 st.markdown(f"**作者**：{', '.join(auth_names) if auth_names else '未知'}")
+
                                 journal_obj = (work.get("primary_location") or {}).get("source") or {}
                                 st.markdown(f"**来源**：{journal_obj.get('display_name', '未知来源')}")
+
                                 doi = work.get("doi")
                                 if doi:
                                     st.markdown(f"**DOI**：[{doi}]({doi})")
+
         # 兜底分支：未匹配到任何功能页时给出提示
         else:
             st.info("请从左侧导航菜单选择功能页面。")
+
         # 全局自动保存：本轮任意交互（切页、检索、日志追加）后统一落盘一次
         save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
                   st.session_state.editor_text, st.session_state.start_time,
                   st.session_state.final_text, st.session_state.is_finished,
+                  st.session_state.pre_test_done, st.session_state.task_started)
