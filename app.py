@@ -924,6 +924,8 @@ def classify_behavior(action, detail=None):
         return ("文献核对", "Literature verification", "检索确认真伪", "confirm validity via search")
     if action == "preset_search_hit":
         return ("AI检索", "AI search", "检索命中模拟文献", "simulated reference searched")
+    if action == "file_upload":
+        return ("文献阅读", "Literature reading", "上传文献/图片", "upload literature/image")
 
     # ---------- 文献推荐 / 引用 ----------
     if action == "reference_mix_generated":
@@ -1021,6 +1023,8 @@ COLUMN_LABELS = {
     "preset_cited_markers": "终稿模拟标记(preset_cited_markers)",
     "marker": "标记(marker)",
     "preset_hits": "命中模拟标记(preset_hits)",
+    "files": "上传文件(files)",
+    "sizes": "文件大小(sizes)",
     "detail_turn": "明细轮次(detail_turn)",
     "detail_scope": "明细范围(detail_scope)",
 }
@@ -1114,6 +1118,45 @@ def detect_copy_from_replies(new_text, old_text, replies, min_len=40):
     return False
 
 
+def extract_docx_text(data):
+    """从 .docx 提取纯文本（本质是 zip + xml），不依赖 python-docx。"""
+    try:
+        import io
+        import zipfile
+        import xml.etree.ElementTree as ET
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            xml = z.read("word/document.xml")
+        root = ET.fromstring(xml)
+        ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        parts = [node.text for node in root.iter(ns + "t") if node.text]
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def extract_pdf_text(data):
+    """尝试用 pypdf/PyPDF2 提取 PDF 文本；未安装或失败时返回空字符串。"""
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader
+        except Exception:
+            return ""
+    try:
+        import io
+        reader = PdfReader(io.BytesIO(data))
+        pages = []
+        for page in reader.pages:
+            try:
+                pages.append(page.extract_text() or "")
+            except Exception:
+                pages.append("")
+        return "\n\n".join(pages).strip()
+    except Exception:
+        return ""
+
+
 # ================= 7. 页面初始化 =================
 if "exp_id" not in st.session_state: st.session_state.exp_id = ""
 if "messages" not in st.session_state: st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -1135,6 +1178,8 @@ if "recent_ai_replies" not in st.session_state: st.session_state.recent_ai_repli
 if "is_generating" not in st.session_state: st.session_state.is_generating = False
 if "pending_error" not in st.session_state: st.session_state.pending_error = False
 if "used_reference_markers" not in st.session_state: st.session_state.used_reference_markers = []
+if "uploaded_docs" not in st.session_state: st.session_state.uploaded_docs = []
+if "uploaded_docs_sig" not in st.session_state: st.session_state.uploaded_docs_sig = ""
 if "timer_paused" not in st.session_state: st.session_state.timer_paused = False
 if "timer_accumulated" not in st.session_state: st.session_state.timer_accumulated = 0.0
 if "timer_segment_start" not in st.session_state: st.session_state.timer_segment_start = ""
@@ -1199,6 +1244,8 @@ if not st.session_state.is_logged_in:
                 st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
                 st.session_state.logs = []
                 st.session_state.used_reference_markers = []
+                st.session_state.uploaded_docs = []
+                st.session_state.uploaded_docs_sig = ""
                 st.session_state.editor_text = ""
                 st.session_state.editor_prev_text = ""
                 st.session_state.temp_editor = ""
@@ -1573,9 +1620,11 @@ else:
                           st.session_state.final_text, st.session_state.is_finished,
                           st.session_state.pre_test_done, st.session_state.task_started)
 
+            # 修复：切换页面后 Streamlit 会清空 temp_editor，此时从 editor_text 恢复，避免编辑内容“消失”
+            if (not st.session_state.get("temp_editor")) and st.session_state.get("editor_text"):
+                st.session_state.temp_editor = st.session_state.editor_text
             st.text_area("在此编辑您的文献综述（建议 800-1000 字）：",
-                         value=st.session_state.editor_text, height=500,
-                         key="temp_editor", on_change=update_editor, disabled=disabled_flag)
+                         height=500, key="temp_editor", on_change=update_editor, disabled=disabled_flag)
 
             if st.button("💾 保存当前内容", use_container_width=True, key="save_editor_btn", disabled=disabled_flag):
                 flush_editor_text()
@@ -1690,6 +1739,82 @@ else:
                                 doi = work.get("doi")
                                 if doi:
                                     st.markdown(f"**DOI**：[{doi}]({doi})")
+
+            # ---- 文献 / 图片上传与阅读预览 ----
+            st.markdown("---")
+            st.markdown("### 📎 文献 / 图片阅读区")
+            st.caption("可直接把 PDF、Word、TXT、Markdown 或图片拖到下方区域，上传后在此预览。")
+
+            uploaded = st.file_uploader(
+                "拖拽或选择文件（PDF / Word / TXT / MD / 图片）",
+                type=["pdf", "docx", "txt", "md", "markdown", "png", "jpg", "jpeg", "webp", "gif"],
+                accept_multiple_files=True,
+                key="lit_file_uploader",
+            )
+            if uploaded:
+                sig = "|".join(f"{f.name}:{f.size}" for f in uploaded)
+                if sig != st.session_state.get("uploaded_docs_sig", ""):
+                    st.session_state.uploaded_docs_sig = sig
+                    log_event("file", "file_upload",
+                              {"files": [f.name for f in uploaded],
+                               "sizes": [f.size for f in uploaded]},
+                              page="学术文献查阅区", detection_method="callback")
+                st.session_state.uploaded_docs = [
+                    {"name": f.name, "type": f.type, "bytes": f.getvalue()} for f in uploaded
+                ]
+
+            docs = st.session_state.get("uploaded_docs", [])
+            if docs:
+                if st.button("🗑 清空已上传文件", use_container_width=True, key="clear_uploaded_docs"):
+                    st.session_state.uploaded_docs = []
+                    st.session_state.uploaded_docs_sig = ""
+                    st.rerun()
+
+                for idx, doc in enumerate(docs):
+                    name = doc["name"]
+                    data = doc["bytes"]
+                    lower = name.lower()
+                    with st.expander(f"📄 {name}（{len(data) // 1024} KB）", expanded=True):
+                        if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                            st.image(data, caption=name)
+                        elif lower.endswith(".pdf"):
+                            text = extract_pdf_text(data)
+                            if text:
+                                st.text_area("PDF 文本预览", value=text, height=380,
+                                             key=f"preview_pdf_{idx}_{len(data)}", disabled=True)
+                            elif len(data) <= 5 * 1024 * 1024:
+                                try:
+                                    import base64
+                                    b64 = base64.b64encode(data).decode("ascii")
+                                    st.components.v1.html(
+                                        f'<iframe src="data:application/pdf;base64,{b64}" '
+                                        'width="100%" height="600" style="border:1px solid #ddd;"></iframe>',
+                                        height=620,
+                                    )
+                                except Exception:
+                                    pass
+                            st.download_button("⬇️ 下载/打开 PDF", data=data, file_name=name,
+                                               mime="application/pdf", key=f"dl_pdf_{idx}_{len(data)}")
+                        elif lower.endswith(".docx"):
+                            text = extract_docx_text(data)
+                            if text:
+                                st.text_area("Word 文本预览", value=text, height=380,
+                                             key=f"preview_docx_{idx}_{len(data)}", disabled=True)
+                            else:
+                                st.warning("未能解析该 Word 文件，可下载后查看。")
+                            st.download_button("⬇️ 下载 Word", data=data, file_name=name,
+                                               key=f"dl_docx_{idx}_{len(data)}")
+                        elif lower.endswith((".txt", ".md", ".markdown")):
+                            try:
+                                text = data.decode("utf-8")
+                            except UnicodeDecodeError:
+                                text = data.decode("gbk", errors="ignore")
+                            st.text_area("文本预览", value=text, height=380,
+                                         key=f"preview_txt_{idx}_{len(data)}", disabled=True)
+                        else:
+                            st.info("该格式暂不支持在线预览，可下载后查看。")
+                            st.download_button("⬇️ 下载文件", data=data, file_name=name,
+                                               key=f"dl_other_{idx}_{len(data)}")
 
         # 兜底分支：未匹配到任何功能页时给出提示
         else:
