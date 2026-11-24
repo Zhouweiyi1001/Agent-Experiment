@@ -67,6 +67,9 @@ SYSTEM_PROMPT = """
 # 任务要求的参考文献数量（可在此调整）
 TASK_MIN_REFERENCES = 5
 
+# 上传文献给智能体阅读时，注入模型的最大字符数（避免超出上下文）
+CHAT_DOC_MAX_CHARS = 8000
+
 TASK_INSTRUCTION_HTML = f"""
 <div class="task-box">
     <h4>📋 实验任务背景说明</h4>
@@ -856,7 +859,29 @@ def count_user_turns(messages):
     return sum(1 for item in (messages or []) if item.get("role") == "user")
 
 
-def build_api_messages(messages, reference_context=""):
+def build_doc_context(docs, max_chars=CHAT_DOC_MAX_CHARS):
+    """把用户上传的文献正文拼成上下文，供模型阅读。"""
+    if not docs:
+        return ""
+    parts = []
+    remaining = max_chars
+    for doc in docs:
+        text = (doc.get("text") or "").strip()
+        if not text or remaining <= 0:
+            continue
+        chunk = text[:remaining]
+        parts.append(f"【上传文档：{doc.get('name', '未命名')}】\n{chunk}")
+        remaining -= len(chunk)
+    if not parts:
+        return ""
+    return (
+        "【用户上传的文献/文档内容】\n"
+        "以下文本由用户上传的文件自动提取，供你阅读并回答用户的问题。"
+        "如果内容不完整或与问题无关，请如实说明。\n\n" + "\n\n".join(parts)
+    )
+
+
+def build_api_messages(messages, reference_context="", doc_context=""):
     """控制上下文长度，避免对话无限增长导致请求变慢或超出上下文。"""
     base = {"role": "system", "content": SYSTEM_PROMPT}
     history = [
@@ -866,6 +891,8 @@ def build_api_messages(messages, reference_context=""):
     ]
     history = history[-24:]
     result = [base]
+    if doc_context:
+        result.append({"role": "system", "content": doc_context})
     if reference_context:
         result.append({"role": "system", "content": reference_context})
     result.extend(history)
@@ -1180,6 +1207,8 @@ if "pending_error" not in st.session_state: st.session_state.pending_error = Fal
 if "used_reference_markers" not in st.session_state: st.session_state.used_reference_markers = []
 if "uploaded_docs" not in st.session_state: st.session_state.uploaded_docs = []
 if "uploaded_docs_sig" not in st.session_state: st.session_state.uploaded_docs_sig = ""
+if "chat_docs" not in st.session_state: st.session_state.chat_docs = []
+if "chat_docs_sig" not in st.session_state: st.session_state.chat_docs_sig = ""
 if "timer_paused" not in st.session_state: st.session_state.timer_paused = False
 if "timer_accumulated" not in st.session_state: st.session_state.timer_accumulated = 0.0
 if "timer_segment_start" not in st.session_state: st.session_state.timer_segment_start = ""
@@ -1246,6 +1275,8 @@ if not st.session_state.is_logged_in:
                 st.session_state.used_reference_markers = []
                 st.session_state.uploaded_docs = []
                 st.session_state.uploaded_docs_sig = ""
+                st.session_state.chat_docs = []
+                st.session_state.chat_docs_sig = ""
                 st.session_state.editor_text = ""
                 st.session_state.editor_prev_text = ""
                 st.session_state.temp_editor = ""
@@ -1441,31 +1472,90 @@ else:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
+            # 已加载的文献（通过对话输入框拖入的文件，文本会注入上下文）
+            chat_docs = st.session_state.get("chat_docs", [])
+            if chat_docs:
+                st.caption("📎 已加载文献：" + "、".join(d["name"] for d in chat_docs) +
+                           "（智能体会在后续回答中参考）")
+                no_text = [d["name"] for d in chat_docs if not (d.get("text") or "").strip()]
+                if no_text:
+                    st.warning("以下文件未能提取文字（PDF 需安装 pypdf）：" + "、".join(no_text))
+                if st.button("🗑 清空已上传文献", key="clear_chat_docs", use_container_width=True):
+                    st.session_state.chat_docs = []
+                    st.rerun()
+            st.caption("💡 可以把 PDF / Word / TXT / Markdown 直接拖进下方输入框，智能体会读取后回答。")
+
             # 若上一条提问未获得回复，暂不开放新输入，避免对话历史出现连续未回复消息。
             has_pending_user = bool(
                 st.session_state.messages and st.session_state.messages[-1].get("role") == "user"
             )
 
             if not st.session_state.is_generating and not has_pending_user:
-                if prompt := st.chat_input("请输入指令..."):
-                    turn = count_user_turns(st.session_state.messages) + 1
-                    keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
-                    has_questioning = any(kw in prompt for kw in keywords)
-                    v_hit, v_cues = detect_validity_inquiry(prompt)
-                    log_event("chat", "chat_user_message",
-                              {"content": prompt, "is_questioning": has_questioning,
-                               "validity_inquiry": v_hit, "validity_cues": v_cues, "length": len(prompt)},
-                              page="AI 对话交互区", turn=turn, detection_method="callback")
+                chat_value = st.chat_input(
+                    "请输入指令，或把文献拖到这里...",
+                    accept_file="multiple",
+                    file_type=["pdf", "docx", "txt", "md", "markdown"],
+                    max_upload_size=50,
+                    disabled=disabled_flag,
+                )
+                if chat_value:
+                    if isinstance(chat_value, str):
+                        prompt = chat_value.strip()
+                        chat_files = []
+                    else:
+                        prompt = (getattr(chat_value, "text", "") or "").strip()
+                        chat_files = list(getattr(chat_value, "files", []) or [])
 
-                    st.session_state.messages.append({"role": "user", "content": prompt})
-                    st.session_state.is_generating = True
-                    st.session_state.pending_error = False
-                    # 先保存用户提问；即使随后网络中断，刷新页面后也能恢复并重试。
-                    save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
-                              st.session_state.editor_text, st.session_state.start_time,
-                              st.session_state.final_text, st.session_state.is_finished,
-                              st.session_state.pre_test_done, st.session_state.task_started)
-                    st.rerun()
+                    if chat_files:
+                        new_docs = []
+                        for f in chat_files:
+                            data = f.getvalue()
+                            lower = f.name.lower()
+                            if lower.endswith(".pdf"):
+                                text = extract_pdf_text(data)
+                            elif lower.endswith(".docx"):
+                                text = extract_docx_text(data)
+                            else:
+                                try:
+                                    text = data.decode("utf-8")
+                                except UnicodeDecodeError:
+                                    text = data.decode("gbk", errors="ignore")
+                            new_docs.append({"name": f.name, "text": text, "size": f.size})
+                        existing = st.session_state.get("chat_docs", [])
+                        names = {d["name"] for d in new_docs}
+                        st.session_state.chat_docs = [d for d in existing if d["name"] not in names] + new_docs
+                        log_event("file", "file_upload",
+                                  {"files": [f.name for f in chat_files],
+                                   "sizes": [f.size for f in chat_files],
+                                   "context": "chat"},
+                                  page="AI 对话交互区", detection_method="callback")
+                        no_text = [d["name"] for d in new_docs if not (d.get("text") or "").strip()]
+                        if no_text:
+                            st.warning("以下文件未能提取文字（PDF 需安装 pypdf）：" + "、".join(no_text))
+                        if not prompt:
+                            prompt = "请阅读我上传的文献，并概括其主要内容与结论。"
+
+                    if prompt:
+                        turn = count_user_turns(st.session_state.messages) + 1
+                        keywords = ["出处", "DOI", "真实吗", "查证", "核实", "链接", "确定", "哪一期"]
+                        has_questioning = any(kw in prompt for kw in keywords)
+                        v_hit, v_cues = detect_validity_inquiry(prompt)
+                        log_event("chat", "chat_user_message",
+                                  {"content": prompt, "is_questioning": has_questioning,
+                                   "validity_inquiry": v_hit, "validity_cues": v_cues,
+                                   "length": len(prompt),
+                                   "attachments": [f.name for f in chat_files] if chat_files else []},
+                                  page="AI 对话交互区", turn=turn, detection_method="callback")
+
+                        st.session_state.messages.append({"role": "user", "content": prompt})
+                        st.session_state.is_generating = True
+                        st.session_state.pending_error = False
+                        # 先保存用户提问；即使随后网络中断，刷新页面后也能恢复并重试。
+                        save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                                  st.session_state.editor_text, st.session_state.start_time,
+                                  st.session_state.final_text, st.session_state.is_finished,
+                                  st.session_state.pre_test_done, st.session_state.task_started)
+                        st.rerun()
 
             if st.session_state.is_generating:
                 last_user_msg = st.session_state.messages[-1].get("content", "")
@@ -1487,7 +1577,10 @@ else:
                                 reference_context = build_reference_context(
                                     references, narrow_focus=_has_narrow_focus(last_user_msg)
                                 )
-                                api_messages = build_api_messages(st.session_state.messages, reference_context)
+                                doc_context = build_doc_context(st.session_state.chat_docs)
+                                api_messages = build_api_messages(
+                                    st.session_state.messages, reference_context, doc_context
+                                )
 
                                 response = client.chat.completions.create(
                                     model="deepseek-chat",
