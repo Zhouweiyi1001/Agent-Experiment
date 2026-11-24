@@ -582,6 +582,129 @@ def fetch_openalex(query, page=1, per_page=10):
         return {"results": [], "meta": {"count": 0}}, str(exc)[:180]
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_crossref_cached(query, rows=5):
+    params = {
+        "query.bibliographic": str(query)[:200],
+        "rows": int(rows),
+        "select": "DOI,title,author,issued,container-title",
+    }
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                "https://api.crossref.org/works",
+                params=params,
+                timeout=(4, 12),
+                headers={"User-Agent": "GraduateResearchExperiment/1.0 (academic research use)"},
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.5)
+    raise RuntimeError(f"Crossref 请求失败：{last_error}")
+
+
+def fetch_crossref(query, rows=5):
+    try:
+        return _fetch_crossref_cached(str(query)[:200], int(rows)), None
+    except Exception as exc:
+        return {"message": {"items": []}}, str(exc)[:180]
+
+
+def _format_crossref_item(item):
+    title_list = item.get("title") or []
+    title = (title_list[0] if title_list else "").strip()
+    if not title:
+        return None
+    author_list = item.get("author") or []
+    authors = []
+    for a in author_list[:3]:
+        name = " ".join(x for x in [a.get("given"), a.get("family")] if x)
+        if name:
+            authors.append(name)
+    authors_text = ", ".join(authors) if authors else "作者信息未完整显示"
+    if len(author_list) > 3:
+        authors_text += ", et al."
+    year = ""
+    parts = ((item.get("issued") or {}).get("date-parts") or [])
+    if parts and parts[0]:
+        year = str(parts[0][0])
+    venue_list = item.get("container-title") or []
+    venue = venue_list[0] if venue_list else ""
+    doi = (item.get("DOI") or "").strip()
+    return {
+        "title": title, "authors": authors_text, "year": year,
+        "venue": venue, "doi": doi,
+        "url": f"https://doi.org/{doi}" if doi else "",
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_arxiv_cached(query, max_results=5):
+    params = {
+        "search_query": f"all:{str(query)[:200]}",
+        "start": 0,
+        "max_results": int(max_results),
+        "sortBy": "relevance",
+    }
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                "https://export.arxiv.org/api/query",
+                params=params,
+                timeout=(4, 15),
+                headers={"User-Agent": "GraduateResearchExperiment/1.0 (academic research use)"},
+            )
+            response.raise_for_status()
+            return response.text
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.5)
+    raise RuntimeError(f"arXiv 请求失败：{last_error}")
+
+
+def parse_arxiv(xml_text):
+    items = []
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return items
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    for entry in root.findall("a:entry", ns):
+        title = (entry.findtext("a:title", default="", namespaces=ns) or "").strip()
+        summary = (entry.findtext("a:summary", default="", namespaces=ns) or "").strip()
+        published = (entry.findtext("a:published", default="", namespaces=ns) or "")[:10]
+        link = ""
+        for l in entry.findall("a:link", ns):
+            if l.get("type") == "text/html":
+                link = l.get("href") or ""
+                break
+        authors = [a.findtext("a:name", default="", namespaces=ns) for a in entry.findall("a:author", ns)]
+        if title:
+            items.append({
+                "title": title,
+                "authors": ", ".join(authors[:3]) + (", et al." if len(authors) > 3 else ""),
+                "published": published,
+                "summary": summary[:400],
+                "url": link,
+            })
+    return items
+
+
+def fetch_arxiv(query, max_results=5):
+    try:
+        xml = _fetch_arxiv_cached(str(query)[:200], int(max_results))
+    except Exception as exc:
+        return [], str(exc)[:180]
+    return parse_arxiv(xml), None
+
+
 def _format_openalex_work(work):
     title = (work.get("display_name") or "").strip()
     year = work.get("publication_year")
@@ -949,6 +1072,10 @@ def classify_behavior(action, detail=None):
         return ("AI检索", "AI search", "打开外部数据库", "open external DB")
     if action == "search_confirm":
         return ("文献核对", "Literature verification", "检索确认真伪", "confirm validity via search")
+    if action == "search_crossref":
+        return ("AI检索", "AI search", "Crossref 核查", "Crossref check")
+    if action == "search_arxiv":
+        return ("AI检索", "AI search", "arXiv 检索", "arXiv search")
     if action == "preset_search_hit":
         return ("AI检索", "AI search", "检索命中模拟文献", "simulated reference searched")
     if action == "file_upload":
@@ -1771,6 +1898,10 @@ else:
                 log_event("ai_search", "search_submit",
                           {"query": search_query, "preset_hits": hits},
                           page="学术文献查阅区", detection_method="callback")
+                log_event("ai_search", "search_crossref", {"query": search_query},
+                          page="学术文献查阅区", detection_method="callback")
+                log_event("ai_search", "search_arxiv", {"query": search_query},
+                          page="学术文献查阅区", detection_method="callback")
                 for m in hits:
                     log_event("preset", "preset_search_hit",
                               {"marker": m, "query": search_query},
@@ -1790,6 +1921,8 @@ else:
                 encoded_query = urllib.parse.quote(search_query)
                 baidu_url = f"https://xueshu.baidu.com/s?wd={encoded_query}"
                 st.markdown(f"[👉 在新页面打开百度学术检索结果]({baidu_url})")
+                cnki_url = f"https://kns.cnki.net/kns8s/defaultresult/index?kw={encoded_query}"
+                st.markdown(f"[👉 在知网检索]({cnki_url})")
                 if st.button("我已打开百度学术并查阅", use_container_width=True, key="confirm_baidu_opened"):
                     log_event("ai_search", "search_click_external",
                               {"target": "baidu_xueshu", "url": baidu_url},
@@ -1832,6 +1965,45 @@ else:
                                 doi = work.get("doi")
                                 if doi:
                                     st.markdown(f"**DOI**：[{doi}]({doi})")
+
+                st.markdown("---")
+                st.markdown("### 📚 Crossref（DOI 核查）")
+                with st.spinner("正在查询 Crossref..."):
+                    cdata, cerror = fetch_crossref(search_query, rows=5)
+                citems = cdata.get("message", {}).get("items", [])
+                if cerror:
+                    st.error(f"Crossref 查询暂时失败：{cerror}")
+                elif not citems:
+                    st.warning(f"⚠️ Crossref 未找到『{search_query}』。")
+                else:
+                    st.success(f"Crossref 返回 {len(citems)} 条结果：")
+                    for i, item in enumerate(citems, 1):
+                        info = _format_crossref_item(item)
+                        if not info:
+                            continue
+                        with st.expander(f"{i}. {info['title']} ({info['year'] or '年份未知'})"):
+                            st.markdown(f"**作者**：{info['authors']}")
+                            st.markdown(f"**来源**：{info['venue'] or '未知'}")
+                            if info["doi"]:
+                                st.markdown(f"**DOI**：[{info['doi']}]({info['url']})")
+
+                st.markdown("---")
+                st.markdown("### 📄 arXiv（AI / CS 预印本）")
+                with st.spinner("正在查询 arXiv..."):
+                    aitems, aerror = fetch_arxiv(search_query, max_results=5)
+                if aerror:
+                    st.error(f"arXiv 查询暂时失败：{aerror}")
+                elif not aitems:
+                    st.warning(f"⚠️ arXiv 未找到『{search_query}』。")
+                else:
+                    st.success(f"arXiv 返回 {len(aitems)} 条结果：")
+                    for i, info in enumerate(aitems, 1):
+                        with st.expander(f"{i}. {info['title']} ({info['published'] or '日期未知'})"):
+                            st.markdown(f"**作者**：{info['authors'] or '未知'}")
+                            if info["summary"]:
+                                st.markdown(f"**摘要**：{info['summary']}")
+                            if info["url"]:
+                                st.markdown(f"**链接**：[{info['url']}]({info['url']})")
 
             # ---- 文献 / 图片上传与阅读预览 ----
             st.markdown("---")
