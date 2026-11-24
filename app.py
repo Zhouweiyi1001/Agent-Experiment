@@ -32,7 +32,7 @@ st.markdown("""
 <style>
     [data-testid="stSidebar"] * { font-size: 16px !important; }
     [data-testid="stSidebar"] button { height: 3em; font-size: 16px !important; font-weight: bold; }
-    textarea { font-size: 16px !important; line-height: 1.6 !important; }
+    textarea { font-size: 18px !important; line-height: 1.75 !important; }
     input[type="text"] { font-size: 18px !important; height: 3em !important; }
     .task-box {
         background-color: #f8faff;
@@ -73,10 +73,10 @@ CHAT_DOC_MAX_CHARS = 8000
 TASK_INSTRUCTION_HTML = f"""
 <div class="task-box">
     <h4>📋 实验任务背景说明</h4>
-    <p>请围绕 <b>「AIGC 对研究生学术研究的影响」</b> 写一篇 <b>800–1000 字</b>的短文，并<b>至少引用 {TASK_MIN_REFERENCES} 篇参考文献</b>。写作过程中可以随时与智能体多轮对话，也可以使用左侧「学术文献查阅区」检索和核实文献。</p>
-    <p><b>短文包含以下四部分，每部分 2–4 句即可：</b></p>
+    <p>请围绕 <b>「AIGC 对研究生学术研究的影响」</b> 写一篇 <b>800–1000 字</b>的文章，并<b>至少引用 {TASK_MIN_REFERENCES} 篇参考文献</b>。写作过程中可以随时与智能体多轮对话，也可以使用左侧「学术文献查阅区」检索和核实文献。</p>
+    <p><b>文章包含以下四部分，每部分 2–4 句即可：</b></p>
     <ul>
-        <li><b>标题：</b>给短文起一个具体标题；</li>
+        <li><b>标题：</b>给文章起一个具体标题；</li>
         <li><b>主题与意义：</b>说明你要讨论什么、为什么重要；</li>
         <li><b>已有研究：</b>相关研究主要讨论了哪些问题？主要发现是什么？（可引用文献）</li>
         <li><b>不足与展望：</b>现有研究还没解决什么？你觉得下一步可以怎么做？</li>
@@ -91,7 +91,7 @@ TASK_QUICK_HTML = f"""
 <div class="task-box" style="padding:10px; margin-bottom:10px;">
     <h4 style="margin:0 0 6px 0;">📌 任务要求速览</h4>
     <div style="line-height:1.55;">
-    围绕「AIGC 对研究生学术研究的影响」写一篇 800–1000 字短文，至少引用 {TASK_MIN_REFERENCES} 篇文献。<br>
+    围绕「AIGC 对研究生学术研究的影响」写一篇 800–1000 字文章，至少引用 {TASK_MIN_REFERENCES} 篇文献。<br>
     ① 标题；② 主题与意义；③ 已有研究的问题与发现；④ 不足与展望；⑤ 文末参考文献。
     </div>
 </div>
@@ -290,6 +290,7 @@ def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
         "messages": messages,
         "logs": logs,
         "editor_text": editor_text,
+        "editor_title": st.session_state.get("editor_title", ""),
         "start_time": start_time,
         "final_text": final_text,
         "is_finished": is_finished,
@@ -315,16 +316,23 @@ def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
 
 
 def flush_editor_text():
-    """把编辑区当前文本写回 editor_text 并落盘，避免切换页面后丢失。"""
+    """把编辑区当前标题/正文写回并落盘，避免切换页面后丢失。"""
     if st.session_state.get("current_tab") != "本地文档编辑区":
         return
-    if "temp_editor" not in st.session_state:
+    changed = False
+    if "temp_title" in st.session_state:
+        title = st.session_state.get("temp_title") or ""
+        if title != (st.session_state.get("editor_title") or ""):
+            st.session_state.editor_title = title
+            changed = True
+    if "temp_editor" in st.session_state:
+        text = st.session_state.get("temp_editor") or ""
+        if text != (st.session_state.get("editor_text") or ""):
+            st.session_state.editor_text = text
+            st.session_state.editor_prev_text = text
+            changed = True
+    if not changed:
         return
-    text = st.session_state.get("temp_editor") or ""
-    if text == (st.session_state.get("editor_text") or ""):
-        return
-    st.session_state.editor_text = text
-    st.session_state.editor_prev_text = text
     save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
               st.session_state.editor_text, st.session_state.start_time,
               st.session_state.final_text, st.session_state.is_finished,
@@ -1316,6 +1324,8 @@ if "exp_id" not in st.session_state: st.session_state.exp_id = ""
 if "messages" not in st.session_state: st.session_state.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 if "logs" not in st.session_state: st.session_state.logs = []
 if "editor_text" not in st.session_state: st.session_state.editor_text = ""
+if "editor_title" not in st.session_state: st.session_state.editor_title = ""
+if "temp_title" not in st.session_state: st.session_state.temp_title = ""
 if "final_text" not in st.session_state: st.session_state.final_text = ""
 if "start_time" not in st.session_state: st.session_state.start_time = None
 if "is_logged_in" not in st.session_state: st.session_state.is_logged_in = False
@@ -1373,6 +1383,8 @@ if not st.session_state.is_logged_in:
                     st.session_state.editor_text = saved_data.get("editor_text") or ""
                     st.session_state.editor_prev_text = st.session_state.editor_text
                     st.session_state.temp_editor = st.session_state.editor_text
+                    st.session_state.editor_title = saved_data.get("editor_title") or ""
+                    st.session_state.temp_title = st.session_state.editor_title
                     st.session_state.final_text = saved_data.get("final_text") or ""
                     st.session_state.start_time = saved_data.get("start_time") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     saved_total = saved_data.get("timer_total_seconds")
@@ -1407,6 +1419,8 @@ if not st.session_state.is_logged_in:
                 st.session_state.editor_text = ""
                 st.session_state.editor_prev_text = ""
                 st.session_state.temp_editor = ""
+                st.session_state.editor_title = ""
+                st.session_state.temp_title = ""
                 st.session_state.final_text = ""
                 st.session_state.last_agent_reply = ""
                 st.session_state.recent_ai_replies = []
@@ -1840,22 +1854,47 @@ else:
                           st.session_state.final_text, st.session_state.is_finished,
                           st.session_state.pre_test_done, st.session_state.task_started)
 
-            # 修复：切换页面后 Streamlit 会清空 temp_editor，此时从 editor_text 恢复，避免编辑内容“消失”
+            # 恢复标题/正文（切换页面后 Streamlit 会清空控件状态）
+            if (not st.session_state.get("temp_title")) and st.session_state.get("editor_title"):
+                st.session_state.temp_title = st.session_state.editor_title
             if (not st.session_state.get("temp_editor")) and st.session_state.get("editor_text"):
                 st.session_state.temp_editor = st.session_state.editor_text
-            st.text_area("在此编辑您的文献综述（建议 800-1000 字）：",
-                         height=500, key="temp_editor", on_change=update_editor, disabled=disabled_flag)
 
-            if st.button("💾 保存当前内容", use_container_width=True, key="save_editor_btn", disabled=disabled_flag):
-                flush_editor_text()
-                st.success("✅ 已保存当前编辑内容")
+            def update_title():
+                st.session_state.editor_title = st.session_state.get("temp_title", "") or ""
+                save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+                          st.session_state.editor_text, st.session_state.start_time,
+                          st.session_state.final_text, st.session_state.is_finished,
+                          st.session_state.pre_test_done, st.session_state.task_started)
 
-            st.caption("ℹ️ 切换页面时编辑内容会自动保存；如仍担心丢失，可先点上方“保存当前内容”。")
+            st.text_input("文章标题", key="temp_title", on_change=update_title,
+                          placeholder="给文章起一个具体标题", disabled=disabled_flag)
 
-            char_count = len(st.session_state.get("temp_editor", "").replace(" ", "").replace("\n", ""))
+            st.text_area("正文内容（建议 800-1000 字）：",
+                         height=560, key="temp_editor", on_change=update_editor, disabled=disabled_flag)
+
+            save_col, stat_col = st.columns([1, 3])
+            with save_col:
+                if st.button("💾 保存当前内容", key="save_editor_btn", use_container_width=True, disabled=disabled_flag):
+                    flush_editor_text()
+                    st.success("✅ 已保存当前编辑内容")
+            with stat_col:
+                text_now = st.session_state.get("temp_editor") or ""
+                char_count = len(text_now.replace(" ", "").replace("\n", ""))
+                paragraphs = len([p for p in text_now.split("\n") if p.strip()])
+                st.markdown(f"**当前字数：{char_count} 字**　|　段落：{paragraphs}　|　预计阅读：约 {max(1, char_count // 300)} 分钟")
+
+            st.progress(min(1.0, char_count / 800.0) if char_count else 0.0,
+                        text=f"写作进度：{char_count} / 800 字（建议 800–1000 字）")
+
             saved_data = load_data(st.session_state.exp_id)
             last_save_time = saved_data.get("last_saved", "未知") if saved_data else "未知"
-            st.caption(f"📊 **当前字数：{char_count} 字** | 💾 自动保存时间：{last_save_time}")
+            st.caption(f"💾 自动保存时间：{last_save_time}　|　ℹ️ 切换页面会自动保存，也可点“保存当前内容”。")
+
+            with st.expander("👁 预览（Markdown 渲染）", expanded=False):
+                preview_title = st.session_state.get("editor_title", "") or ""
+                preview_text = st.session_state.get("editor_text", "") or ""
+                st.markdown((f"# {preview_title}\n\n" if preview_title else "") + (preview_text or "_暂无内容_"))
 
         # 模块三：学术文献查阅区
         elif st.session_state.current_tab == "学术文献查阅区":
@@ -2005,81 +2044,7 @@ else:
                             if info["url"]:
                                 st.markdown(f"**链接**：[{info['url']}]({info['url']})")
 
-            # ---- 文献 / 图片上传与阅读预览 ----
-            st.markdown("---")
-            st.markdown("### 📎 文献 / 图片阅读区")
-            st.caption("可直接把 PDF、Word、TXT、Markdown 或图片拖到下方区域，上传后在此预览。")
-
-            uploaded = st.file_uploader(
-                "拖拽或选择文件（PDF / Word / TXT / MD / 图片）",
-                type=["pdf", "docx", "txt", "md", "markdown", "png", "jpg", "jpeg", "webp", "gif"],
-                accept_multiple_files=True,
-                key="lit_file_uploader",
-            )
-            if uploaded:
-                sig = "|".join(f"{f.name}:{f.size}" for f in uploaded)
-                if sig != st.session_state.get("uploaded_docs_sig", ""):
-                    st.session_state.uploaded_docs_sig = sig
-                    log_event("file", "file_upload",
-                              {"files": [f.name for f in uploaded],
-                               "sizes": [f.size for f in uploaded]},
-                              page="学术文献查阅区", detection_method="callback")
-                st.session_state.uploaded_docs = [
-                    {"name": f.name, "type": f.type, "bytes": f.getvalue()} for f in uploaded
-                ]
-
-            docs = st.session_state.get("uploaded_docs", [])
-            if docs:
-                if st.button("🗑 清空已上传文件", use_container_width=True, key="clear_uploaded_docs"):
-                    st.session_state.uploaded_docs = []
-                    st.session_state.uploaded_docs_sig = ""
-                    st.rerun()
-
-                for idx, doc in enumerate(docs):
-                    name = doc["name"]
-                    data = doc["bytes"]
-                    lower = name.lower()
-                    with st.expander(f"📄 {name}（{len(data) // 1024} KB）", expanded=True):
-                        if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
-                            st.image(data, caption=name)
-                        elif lower.endswith(".pdf"):
-                            text = extract_pdf_text(data)
-                            if text:
-                                st.text_area("PDF 文本预览", value=text, height=380,
-                                             key=f"preview_pdf_{idx}_{len(data)}", disabled=True)
-                            elif len(data) <= 5 * 1024 * 1024:
-                                try:
-                                    import base64
-                                    b64 = base64.b64encode(data).decode("ascii")
-                                    st.components.v1.html(
-                                        f'<iframe src="data:application/pdf;base64,{b64}" '
-                                        'width="100%" height="600" style="border:1px solid #ddd;"></iframe>',
-                                        height=620,
-                                    )
-                                except Exception:
-                                    pass
-                            st.download_button("⬇️ 下载/打开 PDF", data=data, file_name=name,
-                                               mime="application/pdf", key=f"dl_pdf_{idx}_{len(data)}")
-                        elif lower.endswith(".docx"):
-                            text = extract_docx_text(data)
-                            if text:
-                                st.text_area("Word 文本预览", value=text, height=380,
-                                             key=f"preview_docx_{idx}_{len(data)}", disabled=True)
-                            else:
-                                st.warning("未能解析该 Word 文件，可下载后查看。")
-                            st.download_button("⬇️ 下载 Word", data=data, file_name=name,
-                                               key=f"dl_docx_{idx}_{len(data)}")
-                        elif lower.endswith((".txt", ".md", ".markdown")):
-                            try:
-                                text = data.decode("utf-8")
-                            except UnicodeDecodeError:
-                                text = data.decode("gbk", errors="ignore")
-                            st.text_area("文本预览", value=text, height=380,
-                                         key=f"preview_txt_{idx}_{len(data)}", disabled=True)
-                        else:
-                            st.info("该格式暂不支持在线预览，可下载后查看。")
-                            st.download_button("⬇️ 下载文件", data=data, file_name=name,
-                                               key=f"dl_other_{idx}_{len(data)}")
+            # 文献/图片阅读区已按需求移除；如需上传文献，请使用 AI 对话交互区的输入框。
 
         # 兜底分支：未匹配到任何功能页时给出提示
         else:
