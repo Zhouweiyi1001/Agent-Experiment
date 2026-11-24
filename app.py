@@ -309,6 +309,23 @@ def save_data(exp_id, messages, logs, editor_text, start_time, final_text,
                 pass
 
 
+def flush_editor_text():
+    """把编辑区当前文本写回 editor_text 并落盘，避免切换页面后丢失。"""
+    if st.session_state.get("current_tab") != "本地文档编辑区":
+        return
+    if "temp_editor" not in st.session_state:
+        return
+    text = st.session_state.get("temp_editor") or ""
+    if text == (st.session_state.get("editor_text") or ""):
+        return
+    st.session_state.editor_text = text
+    st.session_state.editor_prev_text = text
+    save_data(st.session_state.exp_id, st.session_state.messages, st.session_state.logs,
+              st.session_state.editor_text, st.session_state.start_time,
+              st.session_state.final_text, st.session_state.is_finished,
+              st.session_state.pre_test_done, st.session_state.task_started)
+
+
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1258,10 +1275,13 @@ else:
         nav_disabled = st.session_state.is_generating
         
         if st.button("🤖 AI 对话交互区", use_container_width=True, disabled=nav_disabled):
+            flush_editor_text()
             st.session_state.current_tab = "AI 对话交互区"; st.rerun()
         if st.button("📝 本地文档编辑区", use_container_width=True, disabled=nav_disabled):
+            flush_editor_text()
             st.session_state.current_tab = "本地文档编辑区"; st.rerun()
         if st.button("🔍 学术文献查阅区", use_container_width=True, disabled=nav_disabled):
+            flush_editor_text()
             st.session_state.current_tab = "学术文献查阅区"; st.rerun()
 
         st.markdown("---")
@@ -1554,6 +1574,12 @@ else:
             st.text_area("在此编辑您的文献综述（建议 800-1000 字）：",
                          value=st.session_state.editor_text, height=500,
                          key="temp_editor", on_change=update_editor, disabled=disabled_flag)
+
+            if st.button("💾 保存当前内容", use_container_width=True, key="save_editor_btn", disabled=disabled_flag):
+                flush_editor_text()
+                st.success("✅ 已保存当前编辑内容")
+
+            st.caption("ℹ️ 切换页面时编辑内容会自动保存；如仍担心丢失，可先点上方“保存当前内容”。")
 
             char_count = len(st.session_state.get("temp_editor", "").replace(" ", "").replace("\n", ""))
             saved_data = load_data(st.session_state.exp_id)
